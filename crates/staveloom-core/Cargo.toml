@@ -1,0 +1,38 @@
+[package]
+name = "staveloom-core"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "MusicXML/MIDI parsing, layout, and SVG rendering engine"
+repository = "https://github.com/amoriya/staveloom"
+keywords = ["musicxml", "music-notation", "svg", "midi"]
+categories = ["multimedia::audio", "parser-implementations"]
+
+[dependencies]
+midly = "0.5.3"
+roxmltree = "0.21.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+svg = "0.18.0"
+thiserror = "2.0.18"
+walkdir = "2.5.0"
+zip = { version = "2.2.3", default-features = false, features = ["deflate"] }
+
+# The `tests/` directory lives at the workspace root (not this crate's root),
+# so cargo's automatic test-target discovery can't find it — each integration
+# test file must be registered explicitly.
+[[test]]
+name = "integration_test"
+path = "../../tests/integration_test.rs"
+
+[[test]]
+name = "midi_integration_test"
+path = "../../tests/midi_integration_test.rs"
+
+[[test]]
+name = "midi_roundtrip_test"
+path = "../../tests/midi_roundtrip_test.rs"
+
+[[test]]
+name = "w3c_visual_test"
+path = "../../tests/w3c_visual_test.rs"

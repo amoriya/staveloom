@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Music</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+<harmony default-y="31">
+   <numeral>
+      <numeral-root text="IV">4</numeral-root>
+      <numeral-key>
+         <numeral-fifths>1</numeral-fifths>
+         <numeral-mode>major</numeral-mode>
+      </numeral-key>
+   </numeral>
+   <kind text="">major</kind>
+   <inversion text="6">1</inversion>
+</harmony>
+    </measure>
+  </part>
+</score-partwise>

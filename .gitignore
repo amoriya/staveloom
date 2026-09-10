@@ -1,0 +1,10 @@
+/target
+/tests/snapshots/
+*.svg
+specification_report.html
+preview.html
+preview_debug.html
+*.mp3
+/temp
+.mise.toml
+.claude

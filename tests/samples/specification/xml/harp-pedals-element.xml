@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Music</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+<direction-type>
+   <harp-pedals>
+      <pedal-tuning>
+         <pedal-step>D</pedal-step>
+         <pedal-alter>-1</pedal-alter>
+      </pedal-tuning>
+      <pedal-tuning>
+         <pedal-step>C</pedal-step>
+         <pedal-alter>1</pedal-alter>
+      </pedal-tuning>
+      <pedal-tuning>
+         <pedal-step>B</pedal-step>
+         <pedal-alter>-1</pedal-alter>
+      </pedal-tuning>
+      <pedal-tuning>
+         <pedal-step>E</pedal-step>
+         <pedal-alter>0</pedal-alter>
+      </pedal-tuning>
+      <pedal-tuning>
+         <pedal-step>F</pedal-step>
+         <pedal-alter>-1</pedal-alter>
+      </pedal-tuning>
+      <pedal-tuning>
+         <pedal-step>G</pedal-step>
+         <pedal-alter>0</pedal-alter>
+      </pedal-tuning>
+      <pedal-tuning>
+         <pedal-step>A</pedal-step>
+         <pedal-alter>1</pedal-alter>
+      </pedal-tuning>
+   </harp-pedals>
+</direction-type>
+    </measure>
+  </part>
+</score-partwise>

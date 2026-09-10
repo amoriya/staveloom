@@ -1,0 +1,650 @@
+{
+  "instruments": {
+    "0": {
+      "file": "000_acoustic_grand_piano.sf2",
+      "name": "Yamaha Grand Piano",
+      "size": 7806926
+    },
+    "1": {
+      "file": "001_bright_acoustic_piano.sf2",
+      "name": "Bright Yamaha Grand",
+      "size": 7806898
+    },
+    "2": {
+      "file": "002_electric_grand_piano.sf2",
+      "name": "Electric Piano",
+      "size": 2908006
+    },
+    "3": {
+      "file": "003_honkytonk_piano.sf2",
+      "name": "Honky Tonk",
+      "size": 7807078
+    },
+    "4": {
+      "file": "004_electric_piano_1.sf2",
+      "name": "Rhodes EP",
+      "size": 3196602
+    },
+    "5": {
+      "file": "005_electric_piano_2.sf2",
+      "name": "Legend EP 2",
+      "size": 3528714
+    },
+    "6": {
+      "file": "006_harpsichord.sf2",
+      "name": "Harpsichord",
+      "size": 1395154
+    },
+    "7": {
+      "file": "007_clavinet.sf2",
+      "name": "Clavinet",
+      "size": 188314
+    },
+    "8": {
+      "file": "008_celesta.sf2",
+      "name": "Celesta",
+      "size": 634694
+    },
+    "9": {
+      "file": "009_glockenspiel.sf2",
+      "name": "Glockenspiel",
+      "size": 577430
+    },
+    "10": {
+      "file": "010_music_box.sf2",
+      "name": "Music Box",
+      "size": 636508
+    },
+    "11": {
+      "file": "011_vibraphone.sf2",
+      "name": "Vibraphone",
+      "size": 368146
+    },
+    "12": {
+      "file": "012_marimba.sf2",
+      "name": "Marimba",
+      "size": 1660230
+    },
+    "13": {
+      "file": "013_xylophone.sf2",
+      "name": "Xylophone",
+      "size": 1786718
+    },
+    "14": {
+      "file": "014_tubular_bells.sf2",
+      "name": "Tubular Bells",
+      "size": 251138
+    },
+    "15": {
+      "file": "015_dulcimer.sf2",
+      "name": "Dulcimer",
+      "size": 1260542
+    },
+    "16": {
+      "file": "016_drawbar_organ.sf2",
+      "name": "DrawbarOrgan",
+      "size": 198634
+    },
+    "17": {
+      "file": "017_percussive_organ.sf2",
+      "name": "Percussive Organ",
+      "size": 4056986
+    },
+    "18": {
+      "file": "018_rock_organ.sf2",
+      "name": "Rock Organ",
+      "size": 3089878
+    },
+    "19": {
+      "file": "019_church_organ.sf2",
+      "name": "Church Organ",
+      "size": 3104304
+    },
+    "20": {
+      "file": "020_reed_organ.sf2",
+      "name": "Reed Organ",
+      "size": 83014
+    },
+    "21": {
+      "file": "021_accordion.sf2",
+      "name": "Accordian",
+      "size": 2319334
+    },
+    "22": {
+      "file": "022_harmonica.sf2",
+      "name": "Harmonica",
+      "size": 541578
+    },
+    "23": {
+      "file": "023_tango_accordion.sf2",
+      "name": "Bandoneon",
+      "size": 2860392
+    },
+    "24": {
+      "file": "024_acoustic_guitar_nylon.sf2",
+      "name": "Nylon String Guitar",
+      "size": 1684834
+    },
+    "25": {
+      "file": "025_acoustic_guitar_steel.sf2",
+      "name": "Steel String Guitar",
+      "size": 2107730
+    },
+    "26": {
+      "file": "026_electric_guitar_jazz.sf2",
+      "name": "Jazz Guitar",
+      "size": 835792
+    },
+    "27": {
+      "file": "027_electric_guitar_clean.sf2",
+      "name": "Clean Guitar",
+      "size": 730834
+    },
+    "28": {
+      "file": "028_electric_guitar_muted.sf2",
+      "name": "Palm Muted Guitar",
+      "size": 568222
+    },
+    "29": {
+      "file": "029_overdriven_guitar.sf2",
+      "name": "Overdrive Guitar",
+      "size": 2835584
+    },
+    "30": {
+      "file": "030_distortion_guitar.sf2",
+      "name": "Distortion Guitar",
+      "size": 2136458
+    },
+    "31": {
+      "file": "031_guitar_harmonics.sf2",
+      "name": "Guitar Harmonics",
+      "size": 385506
+    },
+    "32": {
+      "file": "032_acoustic_bass.sf2",
+      "name": "Acoustic Bass",
+      "size": 927900
+    },
+    "33": {
+      "file": "033_electric_bass_finger.sf2",
+      "name": "Fingered Bass",
+      "size": 1333868
+    },
+    "34": {
+      "file": "034_electric_bass_pick.sf2",
+      "name": "Picked Bass",
+      "size": 1686368
+    },
+    "35": {
+      "file": "035_fretless_bass.sf2",
+      "name": "Fretless Bass",
+      "size": 1361120
+    },
+    "36": {
+      "file": "036_slap_bass_1.sf2",
+      "name": "Slap Bass",
+      "size": 2112344
+    },
+    "37": {
+      "file": "037_slap_bass_2.sf2",
+      "name": "Pop Bass",
+      "size": 2208944
+    },
+    "38": {
+      "file": "038_synth_bass_1.sf2",
+      "name": "Synth Bass 1",
+      "size": 6202
+    },
+    "39": {
+      "file": "039_synth_bass_2.sf2",
+      "name": "Synth Bass 2",
+      "size": 100720
+    },
+    "40": {
+      "file": "040_violin.sf2",
+      "name": "Violin",
+      "size": 3049262
+    },
+    "41": {
+      "file": "041_viola.sf2",
+      "name": "Viola",
+      "size": 3377718
+    },
+    "42": {
+      "file": "042_cello.sf2",
+      "name": "Cello",
+      "size": 4739078
+    },
+    "43": {
+      "file": "043_contrabass.sf2",
+      "name": "Contrabass",
+      "size": 1487678
+    },
+    "44": {
+      "file": "044_tremolo_strings.sf2",
+      "name": "Tremolo",
+      "size": 5600174
+    },
+    "45": {
+      "file": "045_pizzicato_strings.sf2",
+      "name": "Pizzicato Section",
+      "size": 2766078
+    },
+    "46": {
+      "file": "046_orchestral_harp.sf2",
+      "name": "Harp",
+      "size": 1689934
+    },
+    "47": {
+      "file": "047_timpani.sf2",
+      "name": "Timpani",
+      "size": 1363670
+    },
+    "48": {
+      "file": "048_string_ensemble_1.sf2",
+      "name": "Strings",
+      "size": 5600142
+    },
+    "49": {
+      "file": "049_string_ensemble_2.sf2",
+      "name": "Slow Strings",
+      "size": 5600050
+    },
+    "50": {
+      "file": "050_synth_strings_1.sf2",
+      "name": "Synth Strings 1",
+      "size": 187954
+    },
+    "51": {
+      "file": "051_synth_strings_2.sf2",
+      "name": "Synth Strings 2",
+      "size": 4302
+    },
+    "52": {
+      "file": "052_choir_aahs.sf2",
+      "name": "Ahh Choir",
+      "size": 4755546
+    },
+    "53": {
+      "file": "053_voice_oohs.sf2",
+      "name": "Ohh Voices",
+      "size": 1242186
+    },
+    "54": {
+      "file": "054_synth_voice.sf2",
+      "name": "Synth Voice",
+      "size": 1505406
+    },
+    "55": {
+      "file": "055_orchestra_hit.sf2",
+      "name": "Orchestra Hit",
+      "size": 238366
+    },
+    "56": {
+      "file": "056_trumpet.sf2",
+      "name": "Trumpet",
+      "size": 232808
+    },
+    "57": {
+      "file": "057_trombone.sf2",
+      "name": "Trombone",
+      "size": 449724
+    },
+    "58": {
+      "file": "058_tuba.sf2",
+      "name": "Tuba",
+      "size": 196410
+    },
+    "59": {
+      "file": "059_muted_trumpet.sf2",
+      "name": "Muted Trumpet",
+      "size": 206930
+    },
+    "60": {
+      "file": "060_french_horn.sf2",
+      "name": "French Horns",
+      "size": 2994802
+    },
+    "61": {
+      "file": "061_brass_section.sf2",
+      "name": "Brass Section",
+      "size": 2584780
+    },
+    "62": {
+      "file": "062_synth_brass_1.sf2",
+      "name": "Synth Brass 1",
+      "size": 831138
+    },
+    "63": {
+      "file": "063_synth_brass_2.sf2",
+      "name": "Synth Brass 2",
+      "size": 831102
+    },
+    "64": {
+      "file": "064_soprano_sax.sf2",
+      "name": "Soprano Sax",
+      "size": 2246490
+    },
+    "65": {
+      "file": "065_alto_sax.sf2",
+      "name": "Alto Sax",
+      "size": 1640374
+    },
+    "66": {
+      "file": "066_tenor_sax.sf2",
+      "name": "Tenor Sax",
+      "size": 4328046
+    },
+    "67": {
+      "file": "067_baritone_sax.sf2",
+      "name": "Baritone Sax",
+      "size": 6001114
+    },
+    "68": {
+      "file": "068_oboe.sf2",
+      "name": "Oboe",
+      "size": 880810
+    },
+    "69": {
+      "file": "069_english_horn.sf2",
+      "name": "English Horn",
+      "size": 2367794
+    },
+    "70": {
+      "file": "070_bassoon.sf2",
+      "name": "Bassoon",
+      "size": 1256146
+    },
+    "71": {
+      "file": "071_clarinet.sf2",
+      "name": "Clarinet",
+      "size": 595358
+    },
+    "72": {
+      "file": "072_piccolo.sf2",
+      "name": "Piccolo",
+      "size": 1176090
+    },
+    "73": {
+      "file": "073_flute.sf2",
+      "name": "Flute",
+      "size": 1277214
+    },
+    "74": {
+      "file": "074_recorder.sf2",
+      "name": "Recorder",
+      "size": 570378
+    },
+    "75": {
+      "file": "075_pan_flute.sf2",
+      "name": "Pan Flute",
+      "size": 656730
+    },
+    "76": {
+      "file": "076_blown_bottle.sf2",
+      "name": "Bottle Chiff",
+      "size": 105722
+    },
+    "77": {
+      "file": "077_shakuhachi.sf2",
+      "name": "Shakuhachi",
+      "size": 240654
+    },
+    "78": {
+      "file": "078_whistle.sf2",
+      "name": "Whistle",
+      "size": 33622
+    },
+    "79": {
+      "file": "079_ocarina.sf2",
+      "name": "Ocarina",
+      "size": 443282
+    },
+    "80": {
+      "file": "080_lead_1_square.sf2",
+      "name": "Square Lead",
+      "size": 3488
+    },
+    "81": {
+      "file": "081_lead_2_sawtooth.sf2",
+      "name": "Saw Wave",
+      "size": 4550
+    },
+    "82": {
+      "file": "082_lead_3_calliope.sf2",
+      "name": "Calliope Lead",
+      "size": 255974
+    },
+    "83": {
+      "file": "083_lead_4_chiff.sf2",
+      "name": "Chiffer Lead",
+      "size": 319800
+    },
+    "84": {
+      "file": "084_lead_5_charang.sf2",
+      "name": "Charang",
+      "size": 196002
+    },
+    "85": {
+      "file": "085_lead_6_voice.sf2",
+      "name": "Solo Vox",
+      "size": 873288
+    },
+    "86": {
+      "file": "086_lead_7_fifths.sf2",
+      "name": "Fifth Sawtooth Wave",
+      "size": 6674
+    },
+    "87": {
+      "file": "087_lead_8_bass_lead.sf2",
+      "name": "Bass & Lead",
+      "size": 4550
+    },
+    "88": {
+      "file": "088_pad_1_new_age.sf2",
+      "name": "Fantasia",
+      "size": 499144
+    },
+    "89": {
+      "file": "089_pad_2_warm.sf2",
+      "name": "Warm Pad",
+      "size": 585618
+    },
+    "90": {
+      "file": "090_pad_3_polysynth.sf2",
+      "name": "Polysynth",
+      "size": 184494
+    },
+    "91": {
+      "file": "091_pad_4_choir.sf2",
+      "name": "Space Voice",
+      "size": 1079474
+    },
+    "92": {
+      "file": "092_pad_5_bowed.sf2",
+      "name": "Bowed Glass",
+      "size": 383672
+    },
+    "93": {
+      "file": "093_pad_6_metallic.sf2",
+      "name": "Metal Pad",
+      "size": 600180
+    },
+    "94": {
+      "file": "094_pad_7_halo.sf2",
+      "name": "Halo Pad",
+      "size": 184314
+    },
+    "95": {
+      "file": "095_pad_8_sweep.sf2",
+      "name": "Sweep Pad",
+      "size": 205830
+    },
+    "96": {
+      "file": "096_fx_1_rain.sf2",
+      "name": "Ice Rain",
+      "size": 190858
+    },
+    "97": {
+      "file": "097_fx_2_soundtrack.sf2",
+      "name": "Soundtrack",
+      "size": 205818
+    },
+    "98": {
+      "file": "098_fx_3_crystal.sf2",
+      "name": "Crystal",
+      "size": 637112
+    },
+    "99": {
+      "file": "099_fx_4_atmosphere.sf2",
+      "name": "Atmosphere",
+      "size": 1889830
+    },
+    "100": {
+      "file": "100_fx_5_brightness.sf2",
+      "name": "Brightness",
+      "size": 444090
+    },
+    "101": {
+      "file": "101_fx_6_goblins.sf2",
+      "name": "Goblin",
+      "size": 329610
+    },
+    "102": {
+      "file": "102_fx_7_echoes.sf2",
+      "name": "Echo Drops",
+      "size": 6259542
+    },
+    "103": {
+      "file": "103_fx_8_sci_fi.sf2",
+      "name": "Star Theme",
+      "size": 935254
+    },
+    "104": {
+      "file": "104_sitar.sf2",
+      "name": "Sitar",
+      "size": 651714
+    },
+    "105": {
+      "file": "105_banjo.sf2",
+      "name": "Banjo",
+      "size": 820996
+    },
+    "106": {
+      "file": "106_shamisen.sf2",
+      "name": "Shamisen",
+      "size": 201130
+    },
+    "107": {
+      "file": "107_koto.sf2",
+      "name": "Koto",
+      "size": 78756
+    },
+    "108": {
+      "file": "108_kalimba.sf2",
+      "name": "Kalimba",
+      "size": 181106
+    },
+    "109": {
+      "file": "109_bagpipe.sf2",
+      "name": "BagPipe",
+      "size": 850420
+    },
+    "110": {
+      "file": "110_fiddle.sf2",
+      "name": "Fiddle",
+      "size": 3049322
+    },
+    "111": {
+      "file": "111_shanai.sf2",
+      "name": "Shenai",
+      "size": 42658
+    },
+    "112": {
+      "file": "112_tinkle_bell.sf2",
+      "name": "Tinker Bell",
+      "size": 13596
+    },
+    "113": {
+      "file": "113_agogo.sf2",
+      "name": "Agogo",
+      "size": 50414
+    },
+    "114": {
+      "file": "114_steel_drums.sf2",
+      "name": "Steel Drums",
+      "size": 201830
+    },
+    "115": {
+      "file": "115_woodblock.sf2",
+      "name": "Woodblock",
+      "size": 54206
+    },
+    "116": {
+      "file": "116_taiko_drum.sf2",
+      "name": "Taiko Drum",
+      "size": 179914
+    },
+    "117": {
+      "file": "117_melodic_tom.sf2",
+      "name": "Melodic Tom",
+      "size": 177862
+    },
+    "118": {
+      "file": "118_synth_drum.sf2",
+      "name": "Synth Drum",
+      "size": 51844
+    },
+    "119": {
+      "file": "119_reverse_cymbal.sf2",
+      "name": "Reverse Cymbal",
+      "size": 181906
+    },
+    "120": {
+      "file": "120_guitar_fret_noise.sf2",
+      "name": "Fret Noise",
+      "size": 23978
+    },
+    "121": {
+      "file": "121_breath_noise.sf2",
+      "name": "Breath Noise",
+      "size": 17560
+    },
+    "122": {
+      "file": "122_seashore.sf2",
+      "name": "Sea Shore",
+      "size": 143426
+    },
+    "123": {
+      "file": "123_bird_tweet.sf2",
+      "name": "Bird Tweet",
+      "size": 124618
+    },
+    "124": {
+      "file": "124_telephone_ring.sf2",
+      "name": "Telephone",
+      "size": 247142
+    },
+    "125": {
+      "file": "125_helicopter.sf2",
+      "name": "Helicopter",
+      "size": 43268
+    },
+    "126": {
+      "file": "126_applause.sf2",
+      "name": "Applause",
+      "size": 257820
+    },
+    "127": {
+      "file": "127_gunshot.sf2",
+      "name": "Gun Shot",
+      "size": 31404
+    },
+    "128": {
+      "file": "128_standard_drums.sf2",
+      "name": "Standard Drums",
+      "size": 11118130
+    }
+  },
+  "fallback": "000_acoustic_grand_piano.sf2"
+}

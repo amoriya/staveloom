@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Music</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+<note default-x="26">
+   <pitch>
+      <step>B</step>
+      <alter>-1</alter>
+      <octave>4</octave>
+   </pitch>
+   <duration>4</duration>
+   <voice>1</voice>
+   <type>quarter</type>
+   <stem default-y="-55">down</stem>
+   <lyric number="1" default-y="-73">
+      <syllabic>single</syllabic>
+      <text>Nacht,</text>
+      <end-line/>
+   </lyric>
+   <lyric number="2" default-y="-97">
+      <syllabic>single</syllabic>
+      <text>Nacht,</text>
+      <end-line/>
+   </lyric>
+</note>
+    </measure>
+  </part>
+</score-partwise>

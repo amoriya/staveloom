@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Music</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+<direction placement="above">
+   <direction-type>
+      <metronome default-y="20" font-family="EngraverTextT" font-size="12" halign="left" relative-x="-32">
+         <beat-unit>eighth</beat-unit>
+         <per-minute>132-144</per-minute>
+      </metronome>
+   </direction-type>
+   <sound tempo="69"/>
+</direction>
+    </measure>
+  </part>
+</score-partwise>

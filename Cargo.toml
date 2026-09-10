@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/staveloom-core",
+    "crates/staveloom-cli",
+    "crates/staveloom-wasm",
+]

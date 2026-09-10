@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Music</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+<score-part id="P2">
+   <part-name print-object="no">Guitar</part-name>
+   <score-instrument id="P2-I2">
+      <instrument-name>Acoustic Guitar (steel)</instrument-name>
+      <instrument-sound>pluck.guitar</instrument-sound>
+   </score-instrument>
+   <midi-instrument id="P2-I2">
+      <midi-channel>2</midi-channel>
+      <midi-program>26</midi-program>
+      <volume>80</volume>
+      <pan>-10</pan>
+   </midi-instrument>
+</score-part>
+    </measure>
+  </part>
+</score-partwise>

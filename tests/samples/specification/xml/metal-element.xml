@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">
+<score-partwise version="4.0">
+  <part-list>
+    <score-part id="P1">
+      <part-name>Music</part-name>
+    </score-part>
+  </part-list>
+  <part id="P1">
+    <measure number="1">
+<direction placement="above">
+   <direction-type>
+      <percussion default-y="46" halign="center">
+         <metal>crash cymbals</metal>
+      </percussion>
+   </direction-type>
+</direction>
+    </measure>
+  </part>
+</score-partwise>
