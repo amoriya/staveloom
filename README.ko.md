@@ -6,6 +6,8 @@
 
 > **웹 플레이어는 완전히 클라이언트 사이드로 동작합니다.** 렌더링(WASM), MIDI 합성(SpessaSynth AudioWorklet), 오디오 재생 모두 서버 없이 브라우저 안에서 완결됩니다.
 
+![Staveloom 웹 플레이어](docs/screenshot.png)
+
 ---
 
 ## 주요 기능

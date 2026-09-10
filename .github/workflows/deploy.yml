@@ -32,7 +32,7 @@ jobs:
 
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
-
+	  
       - name: Install System Dependencies
         run: |
           sudo apt-get update
@@ -42,7 +42,7 @@ jobs:
         uses: jetli/wasm-pack-action@v0.4.0
         with:
           version: "latest"
-
+	  
       - name: Build project
         run: cargo build --release
 

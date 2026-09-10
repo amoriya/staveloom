@@ -6,6 +6,8 @@
 
 > **The web player is fully client-side.** Rendering (WASM), MIDI synthesis (SpessaSynth AudioWorklet), and audio playback all happen entirely in the browser — no server required.
 
+![Staveloom web player](docs/screenshot.png)
+
 ---
 
 ## Key Features
