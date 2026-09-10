@@ -1,8 +1,9 @@
 [package]
 name = "staveloom-wasm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
+readme = "../../README.md"
 description = "WASM bindings for the staveloom-core MusicXML rendering engine"
 repository = "https://github.com/amoriya/staveloom"
 keywords = ["musicxml", "music-notation", "wasm", "svg"]
@@ -12,7 +13,7 @@ categories = ["wasm", "multimedia::audio"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-staveloom-core = { path = "../staveloom-core", version = "0.1.0" }
+staveloom-core = { path = "../staveloom-core", version = "0.1.1" }
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 serde = { version = "1.0.228", features = ["derive"] }
