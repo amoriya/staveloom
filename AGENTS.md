@@ -121,7 +121,8 @@ staveloom/
 │   ├── staveloom-core/   — Rust 렌더링·파싱·MIDI 엔진
 │   ├── staveloom-cli/    — CLI 바이너리
 │   └── staveloom-wasm/   — wasm-bindgen WASM 바인딩
-├── web/
+├── web/                  — 플레이어 앱 (소스 트리 루트 = 앱 루트)
+│   ├── index.html        — 앱 진입점
 │   ├── pkg/              — wasm-pack 빌드 결과물 (staveloom_wasm_bg.wasm)
 │   ├── lib/              — SpessaSynth 번들
 │   ├── fonts/            — Bravura-subset.woff2
@@ -131,6 +132,10 @@ staveloom/
 │   ├── soundfont-loader.js — 온디맨드 SF2 로더
 │   ├── sw.js             — Service Worker (PWA)
 │   └── manifest.json     — PWA 매니페스트
+├── landing/              — 마케팅 랜딩 페이지 (web/과 완전히 독립된 별도 디렉터리)
+│   ├── index.html
+│   ├── landing.css
+│   └── demo.gif          — docs/demo.gif 사본 (docs/는 배포 대상이 아니므로)
 ├── scripts/
 │   ├── generate_bravura_subset.sh — Bravura WOFF2 subset 생성
 │   └── ...               — 리포트·프리뷰·샘플 스크립트

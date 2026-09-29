@@ -12,22 +12,22 @@ const CACHE_NAME = `staveloom-player-${CACHE_VERSION}`;
 // Versioned JS files are matched with ignoreSearch:true so ?v=N query strings
 // do not cause cache misses. soundfonts/index.json is small and changes rarely.
 const STATIC_ASSETS = [
-  "/",
-  "/index.html",
-  "/style.css",
-  "/player.js",
-  "/virtual-score.js",
-  "/soundfont-loader.js",
-  "/midi-player.js",
-  "/manifest.json",
-  "/icon-192.png",
-  "/icon-512.png",
-  "/pkg/staveloom_wasm.js",
-  "/pkg/staveloom_wasm_bg.wasm",
-  "/lib/spessasynth_lib.min.js",
-  "/lib/spessasynth_processor.min.js",
-  "/soundfonts/index.json",
-  "/fonts/Bravura-subset.woff2",
+  "./",
+  "./index.html",
+  "./style.css",
+  "./player.js",
+  "./virtual-score.js",
+  "./soundfont-loader.js",
+  "./midi-player.js",
+  "./manifest.json",
+  "./icon-192.png",
+  "./icon-512.png",
+  "./pkg/staveloom_wasm.js",
+  "./pkg/staveloom_wasm_bg.wasm",
+  "./lib/spessasynth_lib.min.js",
+  "./lib/spessasynth_processor.min.js",
+  "./soundfonts/index.json",
+  "./fonts/Bravura-subset.woff2",
 ];
 
 // ── Install ───────────────────────────────────────────────────────────────────
@@ -99,7 +99,7 @@ async function handleFetch(request) {
   } catch (_err) {
     // Offline fallback for navigation requests
     if (request.mode === "navigate") {
-      const fallback = await cache.match("/index.html");
+      const fallback = await cache.match("./index.html");
       if (fallback) return fallback;
     }
     return new Response("Offline — resource not cached", {

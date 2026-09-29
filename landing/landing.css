@@ -1,0 +1,255 @@
+/* Staveloom landing page — lightweight, standalone stylesheet
+   (intentionally independent from app/style.css, which is the much larger
+   component library for the player itself). */
+
+:root {
+    --bg-primary: hsl(224, 25%, 8%);
+    --bg-secondary: hsl(222, 22%, 12%);
+    --bg-card: hsla(222, 20%, 18%, 0.5);
+
+    --text-primary: hsl(210, 20%, 98%);
+    --text-secondary: hsl(210, 14%, 80%);
+    --text-muted: hsl(210, 10%, 55%);
+
+    --accent: hsl(260, 85%, 62%);
+    --accent-light: hsl(260, 95%, 70%);
+    --accent-gradient: linear-gradient(
+        135deg,
+        hsl(260, 85%, 62%) 0%,
+        hsl(290, 80%, 58%) 100%
+    );
+    --accent-glow: hsla(260, 85%, 62%, 0.35);
+
+    --border-color: hsla(210, 15%, 100%, 0.08);
+
+    --font-family-ui: "Inter", system-ui, -apple-system, sans-serif;
+    --font-family-display: "Outfit", sans-serif;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    margin: 0;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-family: var(--font-family-ui);
+    line-height: 1.5;
+}
+
+a {
+    color: var(--accent-light);
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+.wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 0 24px;
+}
+
+/* ── Nav ─────────────────────────────────────────────────────────────── */
+
+nav.topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 24px;
+    max-width: 1080px;
+    margin: 0 auto;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-family-display);
+    font-weight: 700;
+    font-size: 1.25rem;
+    color: var(--text-primary);
+}
+
+.brand svg {
+    color: var(--accent-light);
+}
+
+.nav-links {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    font-size: 0.9rem;
+}
+
+.nav-links a.muted {
+    color: var(--text-secondary);
+}
+
+/* ── Buttons ─────────────────────────────────────────────────────────── */
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-family: var(--font-family-ui);
+    font-weight: 600;
+    font-size: 0.95rem;
+    border: 1px solid transparent;
+    cursor: pointer;
+}
+
+.btn:hover {
+    text-decoration: none;
+}
+
+.btn-primary {
+    background: var(--accent-gradient);
+    color: white;
+    box-shadow: 0 4px 24px var(--accent-glow);
+}
+
+.btn-primary:hover {
+    filter: brightness(1.08);
+}
+
+.btn-secondary {
+    background: transparent;
+    border-color: var(--border-color);
+    color: var(--text-primary);
+}
+
+.btn-secondary:hover {
+    border-color: var(--accent-light);
+    background: hsla(210, 15%, 100%, 0.04);
+}
+
+/* ── Hero ────────────────────────────────────────────────────────────── */
+
+.hero {
+    text-align: center;
+    padding: 48px 24px 24px;
+}
+
+.hero h1 {
+    font-family: var(--font-family-display);
+    font-size: clamp(2.4rem, 5vw, 3.6rem);
+    font-weight: 800;
+    margin: 0 0 16px;
+    background: var(--accent-gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+}
+
+.hero p.tagline {
+    max-width: 640px;
+    margin: 0 auto 8px;
+    font-size: 1.15rem;
+    color: var(--text-secondary);
+}
+
+.hero p.note {
+    max-width: 560px;
+    margin: 0 auto 32px;
+    font-size: 0.95rem;
+    color: var(--text-muted);
+}
+
+.hero-ctas {
+    display: flex;
+    gap: 14px;
+    justify-content: center;
+    flex-wrap: wrap;
+    margin-bottom: 40px;
+}
+
+.demo-frame {
+    max-width: 900px;
+    margin: 0 auto;
+    border-radius: 16px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+    box-shadow:
+        0 20px 60px rgba(0, 0, 0, 0.4),
+        0 0 0 1px hsla(210, 15%, 100%, 0.03);
+}
+
+.demo-frame img {
+    display: block;
+    width: 100%;
+    height: auto;
+}
+
+/* ── Features ────────────────────────────────────────────────────────── */
+
+.features {
+    padding: 72px 24px;
+}
+
+.features h2 {
+    text-align: center;
+    font-family: var(--font-family-display);
+    font-size: 1.8rem;
+    margin: 0 0 40px;
+}
+
+.feature-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 20px;
+}
+
+.feature-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 24px;
+}
+
+.feature-card .icon {
+    color: var(--accent-light);
+    margin-bottom: 14px;
+}
+
+.feature-card h3 {
+    font-family: var(--font-family-display);
+    font-size: 1.05rem;
+    margin: 0 0 8px;
+}
+
+.feature-card p {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────── */
+
+footer {
+    border-top: 1px solid var(--border-color);
+    padding: 32px 24px 48px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 0.85rem;
+}
+
+footer p {
+    margin: 0 0 8px;
+}
+
+footer .links a {
+    margin: 0 8px;
+}
+
+@media (max-width: 600px) {
+    nav.topbar {
+        flex-direction: column;
+        gap: 12px;
+    }
+}

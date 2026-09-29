@@ -1,4 +1,4 @@
-*[한국어 버전](README.ko.md)*
+_[한국어 버전](README.ko.md)_
 
 # Staveloom
 
@@ -6,7 +6,7 @@
 
 > **The web player is fully client-side.** Rendering (WASM), MIDI synthesis (SpessaSynth), and playback all happen in the browser — no server required.
 
-**[Try the live demo →](https://amoriya.github.io/staveloom/)**
+**[Try the live demo →](https://amoriya.github.io/staveloom/app)**
 
 ![Staveloom web player](docs/demo.gif)
 
