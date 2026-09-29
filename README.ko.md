@@ -1,4 +1,4 @@
-*[English version](README.md)*
+_[English version](README.md)_
 
 # Staveloom
 
@@ -6,7 +6,7 @@
 
 > **웹 플레이어는 완전히 클라이언트 사이드로 동작합니다.** 렌더링(WASM), MIDI 합성(SpessaSynth), 재생 모두 서버 없이 브라우저 안에서 이루어집니다.
 
-**[라이브 데모 바로가기 →](https://amoriya.github.io/staveloom/)**
+**[라이브 데모 바로가기 →](https://amoriya.github.io/staveloom/app)**
 
 ![Staveloom 웹 플레이어](docs/demo.gif)
 
