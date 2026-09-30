@@ -9,7 +9,73 @@
             name="description"
             content="A MusicXML parsing and SVG rendering engine written in Rust, shipped as a CLI tool and a fully client-side browser web player."
         />
+        <meta
+            name="keywords"
+            content="musicxml, music notation, sheet music renderer, svg, midi, soundfont, rust, webassembly, web player"
+        />
+        <link rel="canonical" href="https://amoriya.github.io/staveloom/" />
         <link rel="icon" href="app/icon-192.png" type="image/png" />
+
+        <!-- Open Graph / Twitter Card — social link previews -->
+        <meta property="og:type" content="website" />
+        <meta property="og:site_name" content="Staveloom" />
+        <meta
+            property="og:title"
+            content="Staveloom — MusicXML Renderer &amp; Player"
+        />
+        <meta
+            property="og:description"
+            content="A MusicXML parsing and SVG rendering engine written in Rust, shipped as a CLI tool and a fully client-side browser web player."
+        />
+        <meta property="og:url" content="https://amoriya.github.io/staveloom/" />
+        <meta
+            property="og:image"
+            content="https://amoriya.github.io/staveloom/og-image.png"
+        />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
+
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta
+            name="twitter:title"
+            content="Staveloom — MusicXML Renderer &amp; Player"
+        />
+        <meta
+            name="twitter:description"
+            content="A MusicXML parsing and SVG rendering engine written in Rust, shipped as a CLI tool and a fully client-side browser web player."
+        />
+        <meta
+            name="twitter:image"
+            content="https://amoriya.github.io/staveloom/og-image.png"
+        />
+
+        <!-- Structured data — lets search engines render a rich result -->
+        <script type="application/ld+json">
+            {
+                "@context": "https://schema.org",
+                "@type": "SoftwareApplication",
+                "name": "Staveloom",
+                "url": "https://amoriya.github.io/staveloom/",
+                "applicationCategory": "MultimediaApplication",
+                "operatingSystem": "Any (runs in browser)",
+                "description": "A MusicXML parsing and SVG rendering engine written in Rust, shipped as a CLI tool and a fully client-side browser web player.",
+                "offers": {
+                    "@type": "Offer",
+                    "price": "0",
+                    "priceCurrency": "USD"
+                },
+                "license": [
+                    "https://opensource.org/licenses/MIT",
+                    "https://www.apache.org/licenses/LICENSE-2.0"
+                ],
+                "sameAs": [
+                    "https://github.com/amoriya/staveloom",
+                    "https://crates.io/crates/staveloom-cli",
+                    "https://crates.io/crates/staveloom-core",
+                    "https://crates.io/crates/staveloom-wasm"
+                ]
+            }
+        </script>
 
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

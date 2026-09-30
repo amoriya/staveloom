@@ -1,0 +1,21 @@
+# Staveloom
+
+> A MusicXML parsing and SVG rendering engine written in Rust, shipped as a CLI tool and a browser-based interactive web player. Rendering, MIDI synthesis, and playback all happen client-side in the browser (WebAssembly + Web Audio) — no server required.
+
+Staveloom parses MusicXML (3.1/4.0) and compressed `.mxl` files, or standard MIDI files, and renders publication-quality SVG music notation. The web player synthesizes audio in-browser with SoundFont samples (via SpessaSynth) and drives a playback cursor synced to the score. The CLI additionally exports standard MIDI files and renders MP3 audio.
+
+## Docs
+
+- [GitHub repository](https://github.com/amoriya/staveloom): source code, README, architecture docs
+- [Live web player](https://amoriya.github.io/staveloom/app/): try it in the browser, no install needed
+- [staveloom-core on crates.io](https://crates.io/crates/staveloom-core): the Rust rendering/parsing library
+- [staveloom-cli on crates.io](https://crates.io/crates/staveloom-cli): command-line tool
+- [staveloom-wasm on crates.io](https://crates.io/crates/staveloom-wasm): WASM bindings for the web player
+
+## Key facts
+
+- Written in Rust (2024 edition), dual-licensed MIT OR Apache-2.0
+- Parses MusicXML 3.1/4.0, compressed `.mxl` archives, and standard MIDI files
+- Three renderer layout modes: Compact (default), Elastic (duration-based spacing), Mobile (dense packing for narrow screens)
+- Selective per-part rendering, applied consistently across SVG, MIDI, and audio output
+- Web player is a fully client-side, installable, offline-capable PWA — no server-side rendering or processing
