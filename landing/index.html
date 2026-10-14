@@ -177,11 +177,64 @@
                                 <polyline points="14 2 14 8 20 8"></polyline>
                             </svg>
                         </div>
-                        <h3>MusicXML</h3>
+                        <h3>MusicXML &amp; MIDI parsing</h3>
                         <p>
-                            Broad MusicXML 3.1/4.0 support, tolerant of the
-                            quirky structures exported by various notation
-                            software.
+                            Reads MusicXML 3.1/4.0, compressed
+                            <code>.mxl</code> archives, and standard MIDI
+                            files.
+                        </p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="icon">
+                            <svg
+                                viewBox="0 0 24 24"
+                                width="24"
+                                height="24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <path d="M9 18V5l12-2v13"></path>
+                                <circle cx="6" cy="18" r="3"></circle>
+                                <circle cx="18" cy="16" r="3"></circle>
+                            </svg>
+                        </div>
+                        <h3>Full notation rendering</h3>
+                        <p>
+                            Beams, slurs/ties, tuplets, ornaments, guitar tab
+                            &amp; bends, dynamics, lyrics, and chord symbols —
+                            rendered as publication-quality SVG.
+                        </p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="icon">
+                            <svg
+                                viewBox="0 0 24 24"
+                                width="24"
+                                height="24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <polygon
+                                    points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"
+                                ></polygon>
+                                <path
+                                    d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"
+                                ></path>
+                            </svg>
+                        </div>
+                        <h3>MIDI &amp; MP3 export</h3>
+                        <p>
+                            Exports standard MIDI (SMF) from any score, and
+                            renders MP3 audio from the CLI with ornaments
+                            expanded into real note sequences.
                         </p>
                     </div>
 
@@ -222,67 +275,16 @@
                                 stroke-linecap="round"
                                 stroke-linejoin="round"
                             >
-                                <path d="M9 18V5l12-2v13"></path>
-                                <circle cx="6" cy="18" r="3"></circle>
-                                <circle cx="18" cy="16" r="3"></circle>
-                            </svg>
-                        </div>
-                        <h3>Rich notation support</h3>
-                        <p>
-                            Beams, slurs/ties, guitar tab &amp; bends, tuplets,
-                            ornaments, and collision-free dynamics/lyrics/chord
-                            placement.
-                        </p>
-                    </div>
-
-                    <div class="feature-card">
-                        <div class="icon">
-                            <svg
-                                viewBox="0 0 24 24"
-                                width="24"
-                                height="24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                            >
                                 <polygon
-                                    points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"
+                                    points="5 3 19 12 5 21 5 3"
                                 ></polygon>
-                                <path
-                                    d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"
-                                ></path>
                             </svg>
                         </div>
-                        <h3>MIDI &amp; MP3 export</h3>
+                        <h3>Playback with a synced cursor</h3>
                         <p>
-                            CLI-side rendering with trills, mordents, arpeggios,
-                            and tremolos expanded into real note sequences.
-                        </p>
-                    </div>
-
-                    <div class="feature-card">
-                        <div class="icon">
-                            <svg
-                                viewBox="0 0 24 24"
-                                width="24"
-                                height="24"
-                                fill="none"
-                                stroke="currentColor"
-                                stroke-width="2"
-                                stroke-linecap="round"
-                                stroke-linejoin="round"
-                            >
-                                <circle cx="12" cy="12" r="10"></circle>
-                                <polyline points="12 6 12 12 16 14"></polyline>
-                            </svg>
-                        </div>
-                        <h3>Beat-accurate playback sync</h3>
-                        <p>
-                            Resolves repeats, volta endings, D.S./D.C.,
-                            Segno/Coda into precise timing for a score-follow
-                            cursor.
+                            Resolves repeats, volta endings, D.S./D.C., and
+                            Segno/Coda into actual playback order, with a
+                            cursor that follows along in real time.
                         </p>
                     </div>
 
@@ -305,11 +307,193 @@
                                 <line x1="12" y1="3" x2="12" y2="15"></line>
                             </svg>
                         </div>
-                        <h3>Interactive web player</h3>
+                        <h3>Browser-based web player</h3>
                         <p>
-                            Drag-and-drop MusicXML or MIDI, real-time SF2
-                            synthesis, virtualized rendering for large scores,
-                            and an installable offline-capable PWA.
+                            Drag-and-drop MusicXML or MIDI, real-time
+                            SoundFont synthesis, and an installable,
+                            offline-capable PWA.
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="features">
+            <div class="wrap">
+                <h2>Why Staveloom</h2>
+                <div class="feature-grid">
+                    <div class="feature-card">
+                        <div class="icon">
+                            <svg
+                                viewBox="0 0 24 24"
+                                width="24"
+                                height="24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <rect
+                                    x="2"
+                                    y="4"
+                                    width="20"
+                                    height="14"
+                                    rx="2"
+                                ></rect>
+                                <line x1="8" y1="21" x2="16" y2="21"></line>
+                                <line x1="12" y1="17" x2="12" y2="21"></line>
+                            </svg>
+                        </div>
+                        <h3>Zero-infrastructure</h3>
+                        <p>
+                            Rendering (WASM), SoundFont synthesis, and
+                            playback all run entirely in your browser. No
+                            server, and it keeps working offline.
+                        </p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="icon">
+                            <svg
+                                viewBox="0 0 24 24"
+                                width="24"
+                                height="24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <polygon
+                                    points="12 2 2 7 12 12 22 7 12 2"
+                                ></polygon>
+                                <polyline points="2 17 12 22 22 17"></polyline>
+                                <polyline points="2 12 12 17 22 12"></polyline>
+                            </svg>
+                        </div>
+                        <h3>One Rust core, three consumers</h3>
+                        <p>
+                            The same parsing, layout, and MIDI engine backs
+                            the CLI, the web player, and a standalone crate —
+                            no rendering logic duplicated or drifting between
+                            a "native" and a "web" version.
+                        </p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="icon">
+                            <svg
+                                viewBox="0 0 24 24"
+                                width="24"
+                                height="24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <circle cx="12" cy="12" r="10"></circle>
+                                <polyline points="12 6 12 12 16 14"></polyline>
+                            </svg>
+                        </div>
+                        <h3>Handles real performance structure</h3>
+                        <p>
+                            Most simple renderers just play notes
+                            top-to-bottom. Staveloom fully resolves the
+                            repeat/jump structure before playback, so the
+                            cursor never loses sync.
+                        </p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="icon">
+                            <svg
+                                viewBox="0 0 24 24"
+                                width="24"
+                                height="24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <rect
+                                    x="5"
+                                    y="2"
+                                    width="14"
+                                    height="20"
+                                    rx="2"
+                                    ry="2"
+                                ></rect>
+                                <line
+                                    x1="12"
+                                    y1="18"
+                                    x2="12.01"
+                                    y2="18"
+                                ></line>
+                            </svg>
+                        </div>
+                        <h3>Actually responsive</h3>
+                        <p>
+                            Mobile layout mode is auto-detected by viewport
+                            and repacks the score for a phone screen — it
+                            doesn't just shrink the desktop layout.
+                        </p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="icon">
+                            <svg
+                                viewBox="0 0 24 24"
+                                width="24"
+                                height="24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <path
+                                    d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"
+                                ></path>
+                                <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                        </div>
+                        <h3>Virtualized rendering</h3>
+                        <p>
+                            Large scores only mount the systems currently in
+                            view (IntersectionObserver-based), so even
+                            hundred-page scores stay smooth instead of
+                            choking the DOM.
+                        </p>
+                    </div>
+
+                    <div class="feature-card">
+                        <div class="icon">
+                            <svg
+                                viewBox="0 0 24 24"
+                                width="24"
+                                height="24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <path
+                                    d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"
+                                ></path>
+                                <polyline points="7 10 12 15 17 10"></polyline>
+                                <line x1="12" y1="15" x2="12" y2="3"></line>
+                            </svg>
+                        </div>
+                        <h3>Loads only the SoundFonts you need</h3>
+                        <p>
+                            Per-instrument SoundFont files (1–5 MB each) are
+                            fetched on demand instead of shipping one giant
+                            combined bank — faster first load, less
+                            bandwidth.
                         </p>
                     </div>
                 </div>
