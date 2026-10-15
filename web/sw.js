@@ -5,7 +5,7 @@
 //   fetch    → cache-first for all GET requests; dynamic caching on network hit
 //              ignoreSearch: true so versioned URLs (?v=N) match cached assets
 
-const CACHE_VERSION = "v1";
+const CACHE_VERSION = "v14";
 const CACHE_NAME = `staveloom-player-${CACHE_VERSION}`;
 
 // Static assets to precache on install.
@@ -36,11 +36,13 @@ self.addEventListener("install", (event) => {
     caches
       .open(CACHE_NAME)
       .then((cache) => {
-        // Add assets individually so one failure doesn't abort the whole install
+        // Add assets individually so one failure doesn't abort the whole install.
+        // cache: "reload" bypasses the browser's HTTP cache — otherwise a new
+        // CACHE_VERSION can still precache stale copies (e.g. an old WASM build).
         return Promise.allSettled(
           STATIC_ASSETS.map((url) =>
             cache
-              .add(url)
+              .add(new Request(url, { cache: "reload" }))
               .catch((err) =>
                 console.warn(`[SW] precache miss: ${url} —`, err.message),
               ),

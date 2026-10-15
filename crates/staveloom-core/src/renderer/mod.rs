@@ -103,6 +103,9 @@ pub struct Renderer {
     /// `SpacingStrategy::Mobile`일 때만 사용된다(`Compact`의 고정 12.0 간격에
     /// 대응하는 `Mobile` 전용 값이며, 더 좁게 조정되어 있다).
     pub mobile_onset_gap: f32,
+    /// Stem tips of beam groups drawn since the last chord group finished,
+    /// consumed by `process_chord_group` to re-anchor slurs on beamed stems.
+    beamed_stem_tips: std::cell::RefCell<Vec<BeamedStemTip>>,
 }
 
 impl Default for Renderer {
@@ -130,6 +133,7 @@ impl Default for Renderer {
             measure_start_padding: 12.0, // px, 마디 콘텐츠 맨 앞 고정 패딩
             measure_end_padding: 2.0, // px, 마디 콘텐츠 맨 뒤 고정 패딩
             mobile_onset_gap: 7.0, // px, Mobile 스페이싱 전략 전용 기본 온셋 간격
+            beamed_stem_tips: std::cell::RefCell::new(Vec::new()),
         }
     }
 }
@@ -1054,7 +1058,7 @@ impl Renderer {
                                 .iter()
                                 .position(|&x| x == m_idx)
                                 .unwrap_or(0)];
-                            let content_w = (m_width_actual - 35.0).max(1.0);
+                            let content_w = (m_width_actual - self.measure_start_padding).max(1.0);
                             let margin = 12.0;
 
                             for s in 1..current_num_staves {
@@ -1473,7 +1477,7 @@ impl Renderer {
                                 .iter()
                                 .position(|&x| x == m_idx)
                                 .unwrap_or(0)];
-                            let content_w = (m_width_actual - 35.0).max(1.0);
+                            let content_w = (m_width_actual - self.measure_start_padding).max(1.0);
 
                             for (&prev_t, &(_p_min, p_max)) in pb_measure {
                                 let p_ratio =
@@ -2094,6 +2098,7 @@ impl Renderer {
                             let measure_time_map = &measure_spacings[m_idx].time_to_x;
                             let is_first_in_system = sys_m_idx == 0;
 
+                            let prev_key = state.current_key.clone();
                             // Update state with explicit measure attributes if they exist
                             if let Some(attr) = &measure.attributes {
                                 for c in &attr.clefs {
@@ -2114,9 +2119,14 @@ impl Renderer {
                                     state.divisions = d;
                                 }
                             }
+                            let measure_staff_voices =
+                                Self::analyze_measure_voices(measure, state.divisions);
 
                             // Force attributes at system start OR use explicit measure attributes
-                            let mut attr_to_draw = measure.attributes.clone();
+                            let mut attr_to_draw = measure
+                                .attributes
+                                .as_ref()
+                                .map(|a| Self::with_key_cancel(a, Some(&prev_key)));
                             if is_first_in_system {
                                 let mut attr = attr_to_draw.unwrap_or_default();
                                 if attr.clefs.is_empty() {
@@ -2160,13 +2170,21 @@ impl Renderer {
                                         &state.staff_lines,
                                         has_left_forward_repeat,
                                     )
+                                } else if has_left_forward_repeat {
+                                    // No attributes, but the repeat dots still need clearance
+                                    // (same 12px draw_attributes adds for them).
+                                    (sys_doc, 12.0)
                                 } else {
                                     (sys_doc, 0.0)
                                 };
                             sys_doc = new_doc;
 
-                            let content_start_x = measure_x + initial_attr_width_shared + 25.0;
-                            let content_width = m_width - initial_attr_width_shared - 35.0;
+                            // Must mirror analyze_measures, which sizes each measure as
+                            // measure_start_padding + attribute width + note content.
+                            let content_start_x =
+                                measure_x + initial_attr_width_shared + self.measure_start_padding;
+                            let content_width =
+                                m_width - initial_attr_width_shared - self.measure_start_padding;
 
                             if id == &score.parts[0].id {
                                 measure_coords_in_system.push((
@@ -2281,6 +2299,7 @@ impl Renderer {
                                                     &temp_staff_lines,
                                                     0.0,
                                                     grace_offset,
+                                                    &measure_staff_voices,
                                                 );
                                                 let entry = measure_occupancy
                                                     .entry(temp_group_time_pos)
@@ -2363,6 +2382,7 @@ impl Renderer {
                                                 &temp_staff_lines,
                                                 0.0,
                                                 grace_offset,
+                                                &measure_staff_voices,
                                             );
                                             let entry = measure_occupancy
                                                 .entry(temp_group_time_pos)
@@ -2441,6 +2461,7 @@ impl Renderer {
                                                 &temp_staff_lines,
                                                 0.0,
                                                 grace_offset,
+                                                &measure_staff_voices,
                                             );
                                             let entry = measure_occupancy
                                                 .entry(temp_group_time_pos)
@@ -2533,6 +2554,7 @@ impl Renderer {
                                                 &temp_staff_lines,
                                                 0.0,
                                                 grace_offset,
+                                                &measure_staff_voices,
                                             );
                                             measure_occupancy.insert(
                                                 temp_group_time_pos,
@@ -2671,6 +2693,7 @@ impl Renderer {
                                                 &temp_staff_lines,
                                                 0.0,
                                                 grace_offset,
+                                                &measure_staff_voices,
                                             );
                                             measure_occupancy.insert(
                                                 temp_group_time_pos,
@@ -2764,6 +2787,7 @@ impl Renderer {
                                     &temp_staff_lines,
                                     0.0,
                                     grace_offset,
+                                    &measure_staff_voices,
                                 );
                                 measure_occupancy.insert(
                                     temp_group_time_pos,
@@ -2919,6 +2943,7 @@ impl Renderer {
                                                             &state.staff_lines,
                                                             state.lyric_baseline_y,
                                                             grace_offset,
+                                                            &measure_staff_voices,
                                                         );
                                                     sys_doc = new_doc;
                                                     measure_render_right_edge =
@@ -2973,6 +2998,7 @@ impl Renderer {
                                                         &state.staff_lines,
                                                         state.lyric_baseline_y,
                                                         0.0,
+                                                        &measure_staff_voices,
                                                     );
                                                 sys_doc = new_doc;
                                                 measure_render_right_edge =
@@ -3083,6 +3109,7 @@ impl Renderer {
                                                         &state.staff_lines,
                                                         state.lyric_baseline_y,
                                                         grace_offset,
+                                                        &measure_staff_voices,
                                                     );
                                                 sys_doc = new_doc;
                                                 measure_render_right_edge =
@@ -3194,6 +3221,7 @@ impl Renderer {
                                                         &state.staff_lines,
                                                         state.lyric_baseline_y,
                                                         grace_offset,
+                                                        &measure_staff_voices,
                                                     );
                                                 sys_doc = new_doc;
                                                 measure_render_right_edge =
@@ -3319,6 +3347,7 @@ impl Renderer {
                                                         &state.staff_lines,
                                                         state.lyric_baseline_y,
                                                         grace_offset,
+                                                        &measure_staff_voices,
                                                     );
                                                 sys_doc = new_doc;
                                                 measure_render_right_edge =
@@ -3521,6 +3550,7 @@ impl Renderer {
                                                     &state.staff_lines,
                                                     state.lyric_baseline_y,
                                                     grace_offset,
+                                                    &measure_staff_voices,
                                                 );
                                             sys_doc = new_doc;
                                             measure_render_right_edge =
@@ -3656,6 +3686,7 @@ impl Renderer {
                                                     &state.staff_lines,
                                                     state.lyric_baseline_y,
                                                     grace_offset,
+                                                    &measure_staff_voices,
                                                 );
                                             sys_doc = new_doc;
                                             measure_render_right_edge =
@@ -3768,6 +3799,7 @@ impl Renderer {
                                                         &state.staff_lines,
                                                         state.lyric_baseline_y,
                                                         grace_offset,
+                                                        &measure_staff_voices,
                                                     );
                                                 sys_doc = new_doc;
                                                 measure_render_right_edge =
@@ -3853,6 +3885,7 @@ impl Renderer {
                                                     &state.staff_lines,
                                                     state.lyric_baseline_y,
                                                     grace_offset,
+                                                    &measure_staff_voices,
                                                 );
                                             sys_doc = new_doc;
                                             measure_render_right_edge =
@@ -4004,6 +4037,7 @@ impl Renderer {
                                                     &state.staff_lines,
                                                     state.lyric_baseline_y,
                                                     grace_offset,
+                                                    &measure_staff_voices,
                                                 );
                                             sys_doc = new_doc;
                                             measure_render_right_edge =
@@ -4122,6 +4156,7 @@ impl Renderer {
                                                         &state.staff_lines,
                                                         state.lyric_baseline_y,
                                                         grace_offset,
+                                                        &measure_staff_voices,
                                                     );
                                                 sys_doc = new_doc;
                                                 measure_render_right_edge =
@@ -4268,6 +4303,7 @@ impl Renderer {
                                             &state.staff_lines,
                                             state.lyric_baseline_y,
                                             grace_offset,
+                                            &measure_staff_voices,
                                         );
                                     sys_doc = new_doc;
                                     measure_render_right_edge =
@@ -4622,16 +4658,25 @@ impl Renderer {
                             }
                             // 6. Slurs
                             for (&_num, start_info) in state.active_slurs.iter_mut() {
+                                // End this system's segment at the height of the last
+                                // note before the break (not the start note's height),
+                                // so a slur over a rising/falling line doesn't have to
+                                // bulge over the whole passage to come back to where it
+                                // began. The next system's segment resumes at that same
+                                // height.
+                                let end_y = Self::slur_break_y(start_info);
                                 sys_doc = self.draw_slur(
                                     sys_doc,
                                     start_info.x,
                                     start_info.y,
                                     system_end_x,
-                                    start_info.y,
+                                    end_y,
                                     start_info.is_above,
+                                    &start_info.obstacles,
                                 );
+                                start_info.obstacles.clear();
                                 start_info.x = current_margin_left;
-                                start_info.y = start_info.y - part_start_y; // Store as relative
+                                start_info.y = end_y - part_start_y; // Store as relative
                                 start_info.is_continuation = true;
                             }
                             // 7. Ties
@@ -6425,6 +6470,7 @@ impl Renderer {
         staff_lines: &HashMap<i32, i32>,
         _lyric_baseline_y: f32,
         grace_offset: f32,
+        voice_info: &MeasureVoiceInfo,
     ) -> (Document, f32, f32, f32) {
         let staff_num = chord_group[0].staff.unwrap_or(1);
         let staff_idx = (staff_num - 1).max(0);
@@ -6600,7 +6646,12 @@ impl Renderer {
             let ratio = time_map.get(&time_pos).cloned().unwrap_or(0.0);
             ratio * width
         };
-        let x = start_x + x_offset + grace_offset;
+        // Nudge right when this voice's noteheads would overlap another voice's.
+        let voice_offset = voice_info
+            .offsets
+            .get(&(staff_num, time_pos, chord_group[0].voice.unwrap_or(1)))
+            .map_or(0.0, |o| o * self.note_head_width);
+        let x = start_x + x_offset + grace_offset + voice_offset;
         let (new_doc, stem, note_x, note_y, pitches_y, note_xs) = self.draw_chord_group_at(
             doc,
             x,
@@ -6615,6 +6666,8 @@ impl Renderer {
             measure_total_dur,
             measure_theoretical_dur,
             divisions,
+            time_pos,
+            voice_info,
         );
         doc = new_doc;
         let note_right_edge = note_x + self.note_head_width * 0.5 + 4.0;
@@ -6626,6 +6679,11 @@ impl Renderer {
         }
         let is_tab = clef.sign == "TAB";
         doc = self.process_beams(doc, &effective_chord_group, stem, active_beams);
+        // Beam groups just drawn may have moved stem tips; re-anchor open slurs
+        // and their stem obstacles, and hand the tips to process_slurs so a
+        // slur ending on this note uses the final tip too.
+        let beam_tips: Vec<BeamedStemTip> = self.beamed_stem_tips.borrow_mut().drain(..).collect();
+        Self::reanchor_slurs_to_beams(active_slurs, &beam_tips);
         let (new_doc, new_min, new_max) = self.process_tuplets(
             doc,
             &effective_chord_group,
@@ -6653,6 +6711,7 @@ impl Renderer {
             is_tab,
             &pitches_y,
             &note_xs,
+            &beam_tips,
         );
         doc = new_doc;
         if new_min != f32::MAX {
@@ -6698,10 +6757,13 @@ impl Renderer {
         // Tuplets were already drawn before slurs so the slur layer sits on top.
 
         for slur in active_slurs.values() {
+            // Include the notes the slur must clear, not just its start point.
             if slur.is_above {
-                min_y = min_y.min(slur.y - 20.0);
+                let top = slur.obstacles.iter().map(|o| o.1).fold(slur.y, f32::min);
+                min_y = min_y.min(top - 20.0);
             } else {
-                max_y = max_y.max(slur.y + 20.0);
+                let bottom = slur.obstacles.iter().map(|o| o.1).fold(slur.y, f32::max);
+                max_y = max_y.max(bottom + 20.0);
             }
         }
 
@@ -8882,6 +8944,8 @@ impl Renderer {
         measure_total_dur: i32,
         measure_theoretical_dur: i32,
         divisions: i32,
+        time_pos: i32,
+        voice_info: &MeasureVoiceInfo,
     ) -> (Document, Option<StemInfo>, f32, f32, Vec<f32>, Vec<f32>) {
         if notes.is_empty() {
             return (doc, None, 0.0, 0.0, Vec::new(), Vec::new());
@@ -8917,14 +8981,7 @@ impl Renderer {
                     "half" => 2.0,
                     _ => 2.0,
                 };
-                let voice = notes[0].voice.unwrap_or(1);
-                let voice_shift = if voice == 1 {
-                    0.0
-                } else if voice == 2 {
-                    -1.0
-                } else {
-                    1.0
-                };
+                let voice_shift = Self::rest_voice_shift(notes[0], time_pos, divisions, voice_info);
                 y_offset + (base_shift + voice_shift) * self.staff_line_distance
             };
             return (
@@ -8939,6 +8996,8 @@ impl Renderer {
                     measure_total_dur,
                     measure_theoretical_dur,
                     divisions,
+                    time_pos,
+                    voice_info,
                 ),
                 None,
                 x,
@@ -8986,27 +9045,35 @@ impl Renderer {
 
         // 3. Assign Displacement (X Offsets)
         //
-        // Rule: the stem must always be on the correct side of EVERY notehead.
-        //   stem-up   → stem on the RIGHT  → all noteheads must be LEFT  of stem
-        //   stem-down → stem on the LEFT   → all noteheads must be RIGHT of stem
+        // Seconds within a chord can't share a column, so one notehead of each
+        // close pair moves to the OTHER side of the stem, touching it — the
+        // standard engraving layout:
+        //   stem-up   → stem on the right; displaced notes go RIGHT of the stem
+        //   stem-down → stem on the left;  displaced notes go LEFT  of the stem
+        // Stemless notes (whole/breve) follow the stem-up convention.
         //
-        // The reference note (the one the stem physically connects to) is fixed at x
-        // and is never displaced.  Close-interval neighbours are displaced toward the
-        // OPPOSITE side of the stem so they never cross it:
-        //   stem-up   → displaced notes go LEFT  (x − head_w)
-        //   stem-down → displaced notes go RIGHT (x + head_w)
-        //
-        // Iteration direction: start from the stem-anchor note and work outward, so
-        // the anchor is always at current_side = 0 and is never moved.
+        // The anchor note (the one the stem physically starts from) stays at x.
+        // Iterate outward from it, alternating sides across each run of seconds:
         //   stem-up   → anchor = lowest note (largest y)  → iterate bottom-to-top
         //   stem-down → anchor = highest note (smallest y) → iterate top-to-bottom
+        //
+        // The displacement equals the stem-to-stem distance across a notehead
+        // (2 × stem offset), so the displaced head's edge meets the stem line.
+        let stem_offset_x = if is_grace { 4.0 } else { 5.8 };
+        let is_stemless = matches!(
+            notes[0].note_type.as_deref(),
+            Some("whole") | Some("breve") | Some("long") | Some("maxima")
+        );
+        let displace_w = if is_stemless {
+            // A whole notehead is ~1.69 staff spaces wide.
+            self.staff_line_distance * 1.69 * scale
+        } else {
+            2.0 * stem_offset_x
+        };
         let mut displacements = vec![0.0; notes.len()];
         if !slash_active && clef.sign != "TAB" {
             let n = sorted_notes.len();
-            if stem_up {
-                // Anchor: sorted_notes[n-1] (lowest note, largest y).
-                // Traverse from n-2 down to 0 (upward in pitch).
-                // Displaced notes go LEFT (−head_w) so they stay left of the stem.
+            if stem_up || is_stemless {
                 let mut current_side = 0.0;
                 for i in (0..n.saturating_sub(1)).rev() {
                     let diff = (sorted_notes[i + 1].1 - sorted_notes[i].1).abs();
@@ -9015,12 +9082,9 @@ impl Renderer {
                     } else {
                         current_side = 0.0;
                     }
-                    displacements[sorted_notes[i].0] = current_side * (-head_w);
+                    displacements[sorted_notes[i].0] = current_side * displace_w;
                 }
             } else {
-                // Anchor: sorted_notes[0] (highest note, smallest y).
-                // Traverse from 1 upward (downward in pitch).
-                // Displaced notes go RIGHT (+head_w) so they stay right of the stem.
                 let mut current_side = 0.0;
                 for i in 1..n {
                     let diff = (sorted_notes[i].1 - sorted_notes[i - 1].1).abs();
@@ -9029,10 +9093,12 @@ impl Renderer {
                     } else {
                         current_side = 0.0;
                     }
-                    displacements[sorted_notes[i].0] = current_side * head_w;
+                    displacements[sorted_notes[i].0] = current_side * (-displace_w);
                 }
             }
         }
+        // Augmentation dots go after the rightmost notehead of the chord.
+        let dots_base_x = x + displacements.iter().cloned().fold(0.0_f32, f32::max);
 
         let chord_left_edge = sorted_notes
             .iter()
@@ -9061,7 +9127,10 @@ impl Renderer {
             if !has_accidental || note.print_object == Some(false) {
                 continue;
             }
-            let desired_x = x + displacements[*idx] - head_w * 0.5 - accidental_note_gap;
+            // Accidentals sit left of the whole chord, including noteheads
+            // displaced to the left of the stem (and never between a
+            // right-displaced notehead and the stem).
+            let desired_x = chord_left_edge - accidental_note_gap;
             let mut chosen_idx = None;
             for (i, (col_x, last_y)) in accidental_columns.iter_mut().enumerate() {
                 if *col_x <= desired_x && (y - *last_y).abs() >= accidental_min_y_gap {
@@ -9200,7 +9269,7 @@ impl Renderer {
             }
             if note.print_dot != Some(false) {
                 for i in 0..dot_count {
-                    let dot_x = note_x + head_w + (i as f32 * 6.0 * scale);
+                    let dot_x = dots_base_x + head_w + (i as f32 * 6.0 * scale);
                     let dot_y = if slash_active {
                         y - 3.0 * scale
                     } else if (y - y_offset) % self.staff_line_distance == 0.0 {
@@ -9245,7 +9314,6 @@ impl Renderer {
                 draw_stem = false;
             }
 
-            let stem_offset_x = if is_grace { 4.0 } else { 5.8 };
             let stem_x = if stem_up {
                 x + stem_offset_x
             } else {
@@ -9912,6 +9980,7 @@ impl Renderer {
         is_tab: bool,
         pitches_y: &[f32],
         note_xs: &[f32],
+        beam_tips: &[BeamedStemTip],
     ) -> (Document, f32, f32) {
         let mut min_y = f32::MAX;
         let mut max_y = f32::MIN;
@@ -9941,6 +10010,44 @@ impl Renderer {
             } else {
                 stem_x
             };
+
+            // Record this note as an obstacle for every active slur in the same
+            // staff/voice that it neither starts nor stops, so the curve can be
+            // raised (or lowered) to clear intermediate noteheads and stems.
+            let note_staff = first_note.staff.unwrap_or(1);
+            let note_voice = first_note.voice.unwrap_or(1);
+            let own_slur_numbers: Vec<i32> = first_note
+                .notations
+                .iter()
+                .filter_map(|n| match n {
+                    Notation::Slur { number, .. } => Some(*number),
+                    _ => None,
+                })
+                .collect();
+            for (num, slur) in active_slurs.iter_mut() {
+                if own_slur_numbers.contains(num)
+                    || slur.staff != note_staff
+                    || slur.voice != note_voice
+                {
+                    continue;
+                }
+                let stem_up = stem.map(|s| s.is_up).unwrap_or(false);
+                if slur.is_above {
+                    let mut top = min_pitch_y - 5.0;
+                    if let Some(s) = stem.filter(|_| stem_up) {
+                        slur.obstacles.push((s.x, s.y_tip));
+                        top = top.min(s.y_tip);
+                    }
+                    slur.obstacles.push((notehead_x, top));
+                } else {
+                    let mut bottom = max_pitch_y + 5.0;
+                    if let Some(s) = stem.filter(|_| !stem_up) {
+                        slur.obstacles.push((s.x, s.y_tip));
+                        bottom = bottom.max(s.y_tip);
+                    }
+                    slur.obstacles.push((notehead_x, bottom));
+                }
+            }
 
             for notation in &first_note.notations {
                 if let Notation::Slur {
@@ -9974,14 +10081,20 @@ impl Renderer {
                             let use_stem_tip = is_above
                                 && start_stem_up
                                 && (!first_note.beams.is_empty() || first_note.grace.is_some());
+                            // A slur below a down-stem note always attaches at the
+                            // stem tip — the notehead is on the far side of it.
+                            let use_stem_tip_below =
+                                !is_above && stem.is_some_and(|s| !s.is_up);
                             let cur_y = if use_stem_tip {
                                 stem.unwrap().y_tip - 6.0
+                            } else if use_stem_tip_below {
+                                stem.unwrap().y_tip + 6.0
                             } else if is_above {
                                 above_y_raw
                             } else {
                                 below_y_raw
                             };
-                            let cur_x = if use_stem_tip {
+                            let cur_x = if use_stem_tip || use_stem_tip_below {
                                 stem.unwrap().x
                             } else if is_above {
                                 notehead_x
@@ -9995,6 +10108,10 @@ impl Renderer {
                                     y: cur_y,
                                     is_above,
                                     is_continuation: false,
+                                    staff: note_staff,
+                                    voice: note_voice,
+                                    obstacles: Vec::new(),
+                                    stem_anchor: use_stem_tip || use_stem_tip_below,
                                 },
                             );
                             if is_above {
@@ -10019,17 +10136,27 @@ impl Renderer {
                                     !first_note.beams.is_empty() && !is_beam_start;
                                 let use_stem_tip =
                                     start_info.is_above && end_stem_up && is_beamed_non_start;
-                                let cur_y = if use_stem_tip {
-                                    stem.unwrap().y_tip - 6.0
+                                // Below a down-stem note: attach at the stem tip, as
+                                // in the "start" arm.
+                                let use_stem_tip_below =
+                                    !start_info.is_above && stem.is_some_and(|s| !s.is_up);
+                                // If this note's beam group was just completed, use its
+                                // final (beam-adjusted) stem tip.
+                                let beamed = stem.and_then(|st| {
+                                    beam_tips.iter().find(|b| (b.orig_x - st.x).abs() < 0.5)
+                                });
+                                let (cur_x, cur_y) = if let (true, Some(b)) =
+                                    (use_stem_tip || use_stem_tip_below, beamed)
+                                {
+                                    (b.x, Self::slur_anchor_at_beam(b, start_info.is_above))
+                                } else if use_stem_tip {
+                                    (stem.unwrap().x, stem.unwrap().y_tip - 6.0)
+                                } else if use_stem_tip_below {
+                                    (stem.unwrap().x, stem.unwrap().y_tip + 6.0)
                                 } else if start_info.is_above {
-                                    above_y_raw
+                                    (notehead_x, above_y_raw)
                                 } else {
-                                    below_y_raw
-                                };
-                                let cur_x = if use_stem_tip {
-                                    stem.unwrap().x
-                                } else {
-                                    notehead_x
+                                    (notehead_x, below_y_raw)
                                 };
                                 doc = self.draw_slur(
                                     doc,
@@ -10038,9 +10165,21 @@ impl Renderer {
                                     cur_x,
                                     cur_y,
                                     start_info.is_above,
+                                    &start_info.obstacles,
                                 );
-                                let slur_top = start_info.y.min(cur_y) - 20.0;
-                                let slur_bottom = start_info.y.max(cur_y) + 20.0;
+                                let obs_top = start_info
+                                    .obstacles
+                                    .iter()
+                                    .map(|o| o.1)
+                                    .fold(f32::MAX, f32::min);
+                                let obs_bottom = start_info
+                                    .obstacles
+                                    .iter()
+                                    .map(|o| o.1)
+                                    .fold(f32::MIN, f32::max);
+                                let slur_top = start_info.y.min(cur_y).min(obs_top) - 20.0;
+                                let slur_bottom =
+                                    start_info.y.max(cur_y).max(obs_bottom) + 20.0;
                                 min_y = min_y.min(slur_top);
                                 max_y = max_y.max(slur_bottom);
                             }
@@ -10053,6 +10192,71 @@ impl Renderer {
         (doc, min_y, max_y)
     }
 
+    /// Slur endpoint height just outside a beamed stem's tip: 6px beyond the
+    /// tip, plus the beam's thickness when the beam lies between the tip and
+    /// the slur (down stems with the slur below).
+    fn slur_anchor_at_beam(tip: &BeamedStemTip, is_above: bool) -> f32 {
+        if is_above {
+            tip.tip_y - 6.0
+        } else {
+            tip.tip_y + tip.beam_thickness + 6.0
+        }
+    }
+
+    /// Moves open slurs' stem-tip start points, and the stem obstacles they
+    /// recorded, onto the final stem tips of freshly drawn beam groups.
+    fn reanchor_slurs_to_beams(
+        active_slurs: &mut HashMap<i32, SlurStartInfo>,
+        beam_tips: &[BeamedStemTip],
+    ) {
+        if beam_tips.is_empty() {
+            return;
+        }
+        for slur in active_slurs.values_mut() {
+            if slur.is_continuation {
+                continue;
+            }
+            let on_slur_side = |b: &BeamedStemTip| b.is_up == slur.is_above;
+            if slur.stem_anchor {
+                if let Some(b) = beam_tips
+                    .iter()
+                    .find(|b| (b.orig_x - slur.x).abs() < 0.5 && on_slur_side(b))
+                {
+                    slur.x = b.x;
+                    slur.y = Self::slur_anchor_at_beam(b, slur.is_above);
+                }
+            }
+            for o in slur.obstacles.iter_mut() {
+                if let Some(b) = beam_tips
+                    .iter()
+                    .find(|b| (b.orig_x - o.0).abs() < 0.5 && on_slur_side(b))
+                {
+                    o.0 = b.x;
+                    o.1 = if slur.is_above {
+                        b.tip_y
+                    } else {
+                        b.tip_y + b.beam_thickness
+                    };
+                }
+            }
+        }
+    }
+
+    /// Height at which a slur crossing a system break leaves this system: just
+    /// outside the extreme point of the last note it spans (same 6px offset as
+    /// a stem-tip anchor), or its start height when it spans no other note.
+    fn slur_break_y(slur: &SlurStartInfo) -> f32 {
+        let Some(last_x) = slur.obstacles.iter().map(|o| o.0).reduce(f32::max) else {
+            return slur.y;
+        };
+        let last_notes = slur.obstacles.iter().filter(|o| last_x - o.0 < 8.0).map(|o| o.1);
+        if slur.is_above {
+            last_notes.fold(f32::MAX, f32::min) - 6.0
+        } else {
+            last_notes.fold(f32::MIN, f32::max) + 6.0
+        }
+    }
+
     fn draw_slur(
         &self,
         doc: Document,
@@ -10061,6 +10265,7 @@ impl Renderer {
         x2: f32,
         y2: f32,
         is_above: bool,
+        obstacles: &[(f32, f32)],
     ) -> Document {
         let dx = x2 - x1;
         let dy = y2 - y1;
@@ -10069,12 +10274,77 @@ impl Renderer {
         let direction = if is_above { -1.0 } else { 1.0 };
 
         // Ensure control points are far enough from BOTH endpoints to avoid collisions
-        let base_y = if is_above { y1.min(y2) } else { y1.max(y2) };
-        let cy1 = base_y + direction * height;
-        let cy2 = base_y + direction * height;
+        let default_cy = |y1: f32, y2: f32| {
+            let base_y = if is_above { y1.min(y2) } else { y1.max(y2) };
+            base_y + direction * height
+        };
 
-        let cx1 = x1 + dx * 0.25;
-        let cx2 = x2 - dx * 0.25;
+        // Control-point height needed for the curve to clear every intermediate
+        // obstacle. With both control points at height `cy`,
+        // y(t) = (1-t)^3*y1 + t^3*y2 + 3t(1-t)*cy, and x(t) is monotonic in t,
+        // so for each obstacle we solve x(t) = ox and derive the required cy.
+        const SLUR_CLEARANCE: f32 = 4.0;
+        let required_cy = |y1: f32, y2: f32, cx1: f32, cx2: f32| -> Option<f32> {
+            let mut req: Option<f32> = None;
+            if dx <= 1.0 {
+                return None;
+            }
+            for &(ox, oy) in obstacles {
+                if ox <= x1 || ox >= x2 {
+                    continue;
+                }
+                let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
+                for _ in 0..24 {
+                    let t = 0.5 * (lo + hi);
+                    let u = 1.0 - t;
+                    let xt = u * u * u * x1
+                        + 3.0 * u * u * t * cx1
+                        + 3.0 * u * t * t * cx2
+                        + t * t * t * x2;
+                    if xt < ox {
+                        lo = t;
+                    } else {
+                        hi = t;
+                    }
+                }
+                let t = (0.5 * (lo + hi)).clamp(0.08, 0.92);
+                let u = 1.0 - t;
+                let endpoint_part = u * u * u * y1 + t * t * t * y2;
+                let cy = (oy + direction * SLUR_CLEARANCE - endpoint_part) / (3.0 * u * t);
+                req = Some(match req {
+                    Some(r) if is_above => r.min(cy),
+                    Some(r) => r.max(cy),
+                    None => cy,
+                });
+            }
+            req
+        };
+        let outward = |a: f32, b: f32| if is_above { a.min(b) } else { a.max(b) };
+
+        let (mut y1, mut y2) = (y1, y2);
+        let mut cx1 = x1 + dx * 0.25;
+        let mut cx2 = x2 - dx * 0.25;
+        let mut cy = default_cy(y1, y2);
+        if let Some(req) = required_cy(y1, y2, cx1, cx2) {
+            if outward(req, cy) != cy {
+                // An obstacle pokes through the default arc. Rather than just
+                // pulling the apex up into a narrow spike, flatten the curve
+                // (control points closer to the ends) and lift both endpoints a
+                // little, then solve for the height again.
+                let excess = (req - cy).abs() * 0.75;
+                let lift = (excess * 0.35).min(8.0);
+                y1 += direction * lift;
+                y2 += direction * lift;
+                cx1 = x1 + dx * 0.12;
+                cx2 = x2 - dx * 0.12;
+                cy = default_cy(y1, y2);
+                if let Some(req) = required_cy(y1, y2, cx1, cx2) {
+                    cy = outward(cy, req);
+                }
+            }
+        }
+        let cy1 = cy;
+        let cy2 = cy;
 
         let path = Path::new()
             .set("fill", "none")
@@ -10131,6 +10401,7 @@ impl Renderer {
         // will have its stem_x on the wrong side.  Re-derive the note centre
         // from each stored stem_x and recompute stem_x using that direction.
         let stem_offset = 5.8_f32;
+        let orig_xs: Vec<f32> = pts.iter().map(|(s, _)| s.x).collect();
         let corrected_pts: Vec<(StemInfo, Vec<crate::models::Beam>)> = pts
             .iter()
             .map(|(s, b)| {
@@ -10434,8 +10705,20 @@ impl Renderer {
         }
 
         // 3. Redraw all stems to meet the primary beam
-        for (s_item, _) in pts.iter() {
+        let primary_beam_thickness = if is_cue {
+            self.staff_line_distance * 0.35
+        } else {
+            self.staff_line_distance * 0.5
+        };
+        for (i, (s_item, _)) in pts.iter().enumerate() {
             let stem_tip_y = ref_y1 + (s_item.x - ref_x1) * slope;
+            self.beamed_stem_tips.borrow_mut().push(BeamedStemTip {
+                orig_x: orig_xs[i],
+                x: s_item.x,
+                tip_y: stem_tip_y,
+                is_up: s_item.is_up,
+                beam_thickness: primary_beam_thickness,
+            });
             let stroke_w = if is_cue { 0.8 } else { 1.2 };
             doc = doc.add(
                 Line::new()
@@ -11073,7 +11356,8 @@ impl Renderer {
         // but the width is still reserved so note content stays horizontally
         // aligned with any other (non-TAB) staff/part in the same measure.
         if let Some(key) = &attr.key {
-            if key.fifths != 0 || !key.key_accidentals.is_empty() {
+            let key_width = Self::key_signature_width(key);
+            if key_width > 0.0 {
                 let mut key_max_width: f32 = 0.0;
                 for s in 0..num_staves {
                     let default_clef = Clef {
@@ -11083,10 +11367,6 @@ impl Renderer {
                         ..Default::default()
                     };
                     let clef = current_clefs.get(&(s + 1)).unwrap_or(&default_clef);
-                    let mut key_width = key.fifths.abs() as f32 * 10.0;
-                    if !key.key_accidentals.is_empty() {
-                        key_width = key.key_accidentals.len() as f32 * 10.0;
-                    }
                     key_max_width = key_max_width.max(key_width);
                     if clef.sign == "TAB" {
                         continue;
@@ -11225,6 +11505,57 @@ impl Renderer {
         doc
     }
 
+    /// Copy of `attr` whose key carries `cancel` = the previous key's fifths
+    /// when the file didn't specify `<cancel>` and the key actually changes,
+    /// so the old key's accidentals get cancelled with naturals.
+    pub(crate) fn with_key_cancel(
+        attr: &crate::models::Attributes,
+        prev: Option<&Key>,
+    ) -> crate::models::Attributes {
+        let mut attr = attr.clone();
+        if let (Some(key), Some(prev)) = (attr.key.as_mut(), prev) {
+            if key.cancel.is_none()
+                && key.key_accidentals.is_empty()
+                && prev.key_accidentals.is_empty()
+                && prev.fifths != key.fifths
+            {
+                key.cancel = Some(prev.fifths);
+            }
+        }
+        attr
+    }
+
+    /// Indices (into the previous key's accidental order) that need a natural
+    /// when changing from `key.cancel` to `key.fifths`, and whether they were
+    /// sharps. Switching to C major or between sharps and flats cancels every
+    /// old accidental; staying on the same side cancels only the dropped ones.
+    fn key_cancel_naturals(key: &Key) -> (bool, std::ops::Range<usize>) {
+        let prev = key.cancel.unwrap_or(0);
+        if prev == 0 || !key.key_accidentals.is_empty() {
+            return (false, 0..0);
+        }
+        let prev_n = prev.unsigned_abs().min(7) as usize;
+        let same_side = key.fifths.signum() == prev.signum();
+        let start = if same_side {
+            (key.fifths.unsigned_abs() as usize).min(prev_n)
+        } else {
+            0
+        };
+        (prev > 0, start..prev_n)
+    }
+
+    /// Width a key signature occupies, including any cancelling naturals.
+    fn key_signature_width(key: &Key) -> f32 {
+        let accidentals = if key.key_accidentals.is_empty() {
+            key.fifths.unsigned_abs() as usize
+        } else {
+            key.key_accidentals.len()
+        };
+        let naturals = Self::key_cancel_naturals(key).1.len();
+        let gap = if naturals > 0 && accidentals > 0 { 4.0 } else { 0.0 };
+        (naturals + accidentals) as f32 * 10.0 + gap
+    }
+
     fn draw_key_signature(
         &self,
         mut doc: Document,
@@ -11289,32 +11620,43 @@ impl Renderer {
             return doc;
         }
 
+        let treble_sharps = [0.0, 1.5, -0.5, 1.0, 2.5, 0.5, 2.0];
+        let treble_flats = [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 3.5];
+        let bass_sharps = [1.0, 2.5, 0.5, 2.0, 3.5, 1.5, 3.0];
+        let bass_flats = [3.0, 1.5, 3.5, 2.0, 4.0, 2.5, 4.5];
+        let offsets_for = |is_sharp: bool| match (clef.sign.as_str(), is_sharp) {
+            ("F", true) => &bass_sharps,
+            ("F", false) => &bass_flats,
+            (_, true) => &treble_sharps,
+            (_, false) => &treble_flats,
+        };
+
+        // Cancelling naturals for the previous key come first, on the lines
+        // and spaces where its accidentals stood.
+        let mut x = x;
+        let (cancel_sharps, cancel_range) = Self::key_cancel_naturals(key);
+        if !cancel_range.is_empty() {
+            let prev_offsets = offsets_for(cancel_sharps);
+            for (col, i) in cancel_range.enumerate() {
+                doc = doc.add(
+                    Text::new("\u{E261}")
+                        .set("x", x + col as f32 * 10.0)
+                        .set("y", y_offset + prev_offsets[i] * self.staff_line_distance)
+                        .set("font-size", self.staff_line_distance * 4.0)
+                        .set("dominant-baseline", "central")
+                        .set("font-family", self.font_family.as_str()),
+                );
+            }
+            x += Self::key_cancel_naturals(key).1.len() as f32 * 10.0 + 4.0;
+        }
+
         let fifths = key.fifths;
         if fifths == 0 {
             return doc;
         }
         let is_sharp = fifths > 0;
         let symbol = if is_sharp { "\u{E262}" } else { "\u{E260}" };
-        let treble_sharps = [0.0, 1.5, -0.5, 1.0, 2.5, 0.5, 2.0];
-        let treble_flats = [2.0, 0.5, 2.5, 1.0, 3.0, 1.5, 3.5];
-        let bass_sharps = [1.0, 2.5, 0.5, 2.0, 3.5, 1.5, 3.0];
-        let bass_flats = [3.0, 1.5, 3.5, 2.0, 4.0, 2.5, 4.5];
-        let offsets = match clef.sign.as_str() {
-            "F" => {
-                if is_sharp {
-                    &bass_sharps
-                } else {
-                    &bass_flats
-                }
-            }
-            _ => {
-                if is_sharp {
-                    &treble_sharps
-                } else {
-                    &treble_flats
-                }
-            }
-        };
+        let offsets = offsets_for(is_sharp);
         for i in 0..(fifths.abs() as usize) {
             if i < offsets.len() {
                 doc = doc.add(
@@ -11369,6 +11711,151 @@ impl Renderer {
         )
     }
 
+    /// Collects which voices appear on each staff of a measure and which
+    /// chord groups must be nudged right because their noteheads would overlap
+    /// another voice's (unison or a second apart) at the same onset. Time
+    /// positions use the same 10080-per-quarter units as the renderer.
+    pub(crate) fn analyze_measure_voices(
+        measure: &crate::models::Measure,
+        mut divisions: i32,
+    ) -> MeasureVoiceInfo {
+        let mut info = MeasureVoiceInfo::default();
+        // (staff, time) -> voice -> diatonic steps of its noteheads
+        let mut heads: HashMap<(i32, i32), HashMap<i32, Vec<i32>>> = HashMap::new();
+        // (staff, time, voice) -> duration of that voice's chord group
+        let mut durations: HashMap<(i32, i32, i32), i32> = HashMap::new();
+        // (staff, time, voice) -> explicit stem direction (down?) of that chord group
+        let mut stem_down: HashMap<(i32, i32, i32), Option<bool>> = HashMap::new();
+        let mut time = 0;
+        let mut chord_time = 0;
+        let to_units = |d: i32, div: i32| (d as f64 * 10080.0 / div.max(1) as f64).round() as i32;
+        for el in &measure.elements {
+            match el {
+                MeasureElement::Note(n) => {
+                    let staff = n.staff.unwrap_or(1);
+                    let voice = n.voice.unwrap_or(1);
+                    let t = if n.is_chord { chord_time } else { time };
+                    if !n.is_chord && n.grace.is_none() && n.print_object != Some(false) {
+                        info.voice_spans.entry(staff).or_default().push((
+                            voice,
+                            t,
+                            t + to_units(n.duration, divisions),
+                        ));
+                    }
+                    if !n.rest && n.grace.is_none() {
+                        let step = n
+                            .pitch
+                            .as_ref()
+                            .map(|p| (p.step.as_str(), p.octave))
+                            .or_else(|| {
+                                n.unpitched
+                                    .as_ref()
+                                    .map(|u| (u.display_step.as_str(), u.display_octave))
+                            })
+                            .and_then(|(st, oct)| {
+                                "CDEFGAB".find(st).map(|i| oct * 7 + i as i32)
+                            });
+                        if !n.is_chord {
+                            durations.insert((staff, t, voice), n.duration);
+                            let down = match n.stem.as_deref() {
+                                Some("down") => Some(true),
+                                Some("up") => Some(false),
+                                _ => None,
+                            };
+                            stem_down.insert((staff, t, voice), down);
+                        }
+                        if let Some(step) = step {
+                            heads
+                                .entry((staff, t))
+                                .or_default()
+                                .entry(voice)
+                                .or_default()
+                                .push(step);
+                        }
+                    }
+                    if !n.is_chord && n.grace.is_none() {
+                        chord_time = time;
+                        time += to_units(n.duration, divisions);
+                    }
+                }
+                MeasureElement::Backup(d) => {
+                    time = (time - to_units(*d, divisions)).max(0);
+                    chord_time = time;
+                }
+                MeasureElement::Forward(d) => {
+                    time += to_units(*d, divisions);
+                    chord_time = time;
+                }
+                MeasureElement::Attributes(attr) => {
+                    if let Some(d) = attr.divisions {
+                        divisions = d;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (&(staff, t), by_voice) in &heads {
+            let mut voices: Vec<i32> = by_voice.keys().copied().collect();
+            voices.sort_unstable();
+            for (i, &voice) in voices.iter().enumerate() {
+                let steps = &by_voice[&voice];
+                let mut sorted = steps.clone();
+                sorted.sort_unstable();
+                if sorted.windows(2).any(|w| w[1] - w[0] <= 1) {
+                    let down = stem_down.get(&(staff, t, voice)).copied().flatten();
+                    info.chord_seconds.push((t, down));
+                }
+                let dur = durations.get(&(staff, t, voice));
+                for &other in &voices[..i] {
+                    let overlaps = steps
+                        .iter()
+                        .any(|a| by_voice[&other].iter().any(|b| (a - b).abs() <= 1));
+                    if !overlaps {
+                        continue;
+                    }
+                    if dur.is_some() && dur == durations.get(&(staff, t, other)) {
+                        info.offsets.entry((staff, t, other)).or_insert(-0.5);
+                        info.offsets.insert((staff, t, voice), 0.5);
+                    } else {
+                        info.offsets.insert((staff, t, voice), 1.0);
+                    }
+                    break;
+                }
+            }
+        }
+        info
+    }
+
+    /// Vertical rest offset in staff spaces. A rest stays centred unless
+    /// another voice on the same staff has a note or rest sounding during the
+    /// rest's own time span — voice numbers alone don't matter (exporters such
+    /// as MuseScore number the second staff's voices 5-8, and a voice may only
+    /// cover part of the measure). When voices do overlap, the lowest-numbered
+    /// (upper) voice's rest moves up and the others' move down.
+    fn rest_voice_shift(
+        note: &Note,
+        time_pos: i32,
+        divisions: i32,
+        voice_info: &MeasureVoiceInfo,
+    ) -> f32 {
+        let voice = note.voice.unwrap_or(1);
+        let end = time_pos
+            + (note.duration as f64 * 10080.0 / divisions.max(1) as f64).round() as i32;
+        let Some(spans) = voice_info.voice_spans.get(&note.staff.unwrap_or(1)) else {
+            return 0.0;
+        };
+        let overlapping: Vec<i32> = spans
+            .iter()
+            .filter(|&&(v, s, e)| v != voice && s < end && time_pos < e)
+            .map(|&(v, _, _)| v)
+            .collect();
+        match overlapping.iter().min() {
+            None => 0.0,
+            Some(&lowest_other) if voice < lowest_other => -1.0,
+            Some(_) => 1.0,
+        }
+    }
+
     fn draw_rest(
         &self,
         mut doc: Document,
@@ -11381,6 +11868,8 @@ impl Renderer {
         _measure_total_dur: i32,
         measure_theoretical_dur: i32,
         divisions: i32,
+        time_pos: i32,
+        voice_info: &MeasureVoiceInfo,
     ) -> Document {
         let duration_units = if divisions > 0 {
             note.duration as f32 * 10080.0 / divisions as f32
@@ -11416,7 +11905,6 @@ impl Renderer {
             _ => "\u{E4E5}",
         };
 
-        let voice = note.voice.unwrap_or(1);
         let y = if is_full_measure_rest {
             if line_count == 1 {
                 // For 1-line staff, hang from the only line (index 2)
@@ -11438,13 +11926,7 @@ impl Renderer {
                 "half" => 2.0,  // sits on line 3
                 _ => 2.0,       // centered on line 3
             };
-            let voice_shift = if voice == 1 {
-                0.0
-            } else if voice == 2 {
-                -1.0
-            } else {
-                1.0
-            };
+            let voice_shift = Self::rest_voice_shift(note, time_pos, divisions, voice_info);
             y_offset + (base_shift + voice_shift) * self.staff_line_distance
         };
 

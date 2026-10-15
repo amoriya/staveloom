@@ -24,6 +24,9 @@ impl super::Renderer {
         let mut global_clefs: HashMap<String, HashMap<i32, Clef>> = HashMap::new();
         let mut global_key: HashMap<String, Key> = HashMap::new();
         let mut global_time: HashMap<String, Time> = HashMap::new();
+        // Staff count per part persists across measures (`<staves>` usually
+        // appears only in the first measure).
+        let mut global_staves: HashMap<String, i32> = HashMap::new();
 
         for part in &score.parts {
             current_divisions.insert(part.id.clone(), 1);
@@ -59,6 +62,14 @@ impl super::Renderer {
                     let p_id = &part.id;
                     let staff_dist = self.grand_staff_distance;
 
+                    // The renderer pads attributes by an extra 12px when a forward
+                    // repeat sits on the left barline; reserve that here too.
+                    let has_left_forward_repeat = measure.elements.iter().any(|el| {
+                        matches!(el, crate::models::MeasureElement::Barline(bl)
+                            if bl.location == "left"
+                                && bl.repeat.as_ref().is_some_and(|r| r.direction == "forward"))
+                    });
+
                     // Space needed if this measure starts a new system
                     let temp_attr = crate::models::Attributes {
                         clefs: global_clefs
@@ -77,17 +88,17 @@ impl super::Renderer {
                         0.0,
                         0.0,
                         &global_clefs.get(p_id).cloned().unwrap_or_default(),
-                        1,
+                        *global_staves.get(p_id).unwrap_or(&1),
                         staff_dist,
                         &HashMap::new(),
-                        false,
+                        has_left_forward_repeat,
                     );
                     system_start_attr_w = system_start_attr_w.max(consumed_x);
 
                     let mut p_time = 0;
                     let mut p_chord_time = 0;
                     let mut divisions = *current_divisions.get(p_id).unwrap_or(&1);
-                    let mut num_staves_sim = 1;
+                    let mut num_staves_sim = *global_staves.get(p_id).unwrap_or(&1);
                     let mut current_clefs_sim = global_clefs.get(p_id).cloned().unwrap_or_default();
                     let mut pending_grace_w = 0.0;
 
@@ -105,6 +116,8 @@ impl super::Renderer {
                         }
                     }
 
+                    let measure_start_divisions = divisions;
+                    let prev_key = global_key.get(p_id).cloned();
                     for el in &measure.elements {
                         match el {
                             crate::models::MeasureElement::Harmony(h) => {
@@ -223,6 +236,7 @@ impl super::Renderer {
                                 }
                                 if let Some(st) = attr.staves {
                                     num_staves_sim = st;
+                                    global_staves.insert(p_id.clone(), st);
                                 }
                                 for c in &attr.clefs {
                                     current_clefs_sim.insert(c.number, c.clone());
@@ -283,18 +297,54 @@ impl super::Renderer {
                         }
                     }
 
+                    // Noteheads displaced sideways (voices avoiding each other,
+                    // or a chord's second) need that much extra room on each
+                    // side of the onset.
+                    let voice_info = Self::analyze_measure_voices(measure, measure_start_divisions);
+                    let mut extents: HashMap<i32, (f32, f32)> = HashMap::new();
+                    for (&(_, t, _), &o) in &voice_info.offsets {
+                        let e = extents.entry(t).or_insert((0.0, 0.0));
+                        e.0 = e.0.min(o);
+                        e.1 = e.1.max(o);
+                    }
+                    // A chord's second puts a notehead on the far side of the stem.
+                    for &(t, down) in &voice_info.chord_seconds {
+                        let e = extents.entry(t).or_insert((0.0, 0.0));
+                        if down != Some(false) {
+                            e.0 = e.0.min(-1.0);
+                        }
+                        if down != Some(true) {
+                            e.1 = e.1.max(1.0);
+                        }
+                    }
+                    for (t, (left, right)) in extents {
+                        let entry = onset_needs
+                            .entry(t)
+                            .or_insert_with(crate::renderer::types::OnsetNeeds::default);
+                        entry.prefix += -left * self.note_head_width;
+                        entry.suffix += right * self.note_head_width;
+                    }
+
+                    if has_left_forward_repeat && measure.attributes.is_none() {
+                        initial_attr_w = initial_attr_w.max(12.0);
+                    }
                     let mut part_measure_dur = p_time;
                     if let Some(attr) = &measure.attributes {
+                        // Same cancelling naturals the renderer will draw.
+                        let attr = &Self::with_key_cancel(attr, prev_key.as_ref());
+                        // Use the part's real staff count: draw_attributes skips
+                        // clefs for staves beyond it, so a clef change on staff 2
+                        // would otherwise reserve no width at all.
                         let (_, consumed_x) = self.draw_attributes(
                             svg::Document::new(),
                             attr,
                             0.0,
                             0.0,
                             &HashMap::new(),
-                            1,
+                            num_staves_sim,
                             staff_dist,
                             &HashMap::new(),
-                            false,
+                            has_left_forward_repeat,
                         );
                         initial_attr_w = initial_attr_w.max(consumed_x);
                         if let Some(time) = &attr.time {

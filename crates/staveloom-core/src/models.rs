@@ -355,6 +355,11 @@ pub struct Key {
     pub fifths: i32,
     pub mode: Option<String>,
     pub key_accidentals: Vec<KeyAccidental>,
+    /// Fifths of the previous key whose accidentals are cancelled with
+    /// naturals when this key takes effect (MusicXML `<cancel>`). When absent
+    /// in the file, the renderer derives it from the key in force before.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub cancel: Option<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]

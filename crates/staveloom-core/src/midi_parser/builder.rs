@@ -874,6 +874,7 @@ fn build_measures(
                             fifths: key_fifths as i32,
                             mode: None,
                             key_accidentals: Vec::new(),
+                            cancel: None,
                         })
                     } else {
                         None
@@ -1054,6 +1055,7 @@ fn build_measures(
                     fifths: key_fifths as i32,
                     mode: None,
                     key_accidentals: Vec::new(),
+                    cancel: None,
                 }),
                 time: Some(Time {
                     beats: ts_num.to_string(),

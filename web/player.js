@@ -438,9 +438,6 @@
             ? instruments.map((i) => i.name).join(", ")
             : "No Instruments";
         scoreInfoSection.classList.remove("hidden");
-        if (partsSection) {
-          partsSection.classList.remove("hidden");
-        }
       }
 
       // Store systems and build combined SVG for download
@@ -564,10 +561,14 @@
   // ── Parts List ───────────────────────────────────────────────────────────
   function populatePartsList(parts) {
     partsList.innerHTML = "";
-    if (parts.length <= 1) {
+    if (parts.length === 0) {
       partsSection.classList.add("hidden");
       return;
     }
+    // A single part is still listed (as information), but there is nothing
+    // to filter: its checkbox is locked on and the apply button is hidden.
+    const single = parts.length === 1;
+    applyFiltersBtn.classList.toggle("hidden", single);
     parts.forEach((part) => {
       const label = document.createElement("label");
       label.className = "checkbox-item";
@@ -575,6 +576,7 @@
       checkbox.type = "checkbox";
       checkbox.value = part.id;
       checkbox.checked = true;
+      checkbox.disabled = single;
       label.appendChild(checkbox);
       label.appendChild(document.createTextNode(part.name || part.id));
       partsList.appendChild(label);

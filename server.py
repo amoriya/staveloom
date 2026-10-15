@@ -24,6 +24,8 @@ class StaveloomPlayerHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         if self.path.endswith("sw.js"):
             self.send_header("Service-Worker-Allowed", "/")
+        # Dev server: always revalidate so rebuilt WASM/JS is picked up.
+        self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
     def log_message(self, format, *args):

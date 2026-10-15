@@ -592,10 +592,16 @@ fn parse_attributes(node: Node) -> Attributes {
             }
         }
 
+        let cancel = n
+            .children()
+            .find(|c| c.has_tag_name("cancel"))
+            .and_then(|c| c.text()?.trim().parse().ok());
+
         attr.key = Some(Key {
             fifths,
             mode,
             key_accidentals,
+            cancel,
         });
     }
     if let Some(n) = node.children().find(|n| n.has_tag_name("transpose")) {
