@@ -16,6 +16,11 @@ struct RawTrackEvent {
     kind: midly::TrackEventKind<'static>,
 }
 
+/// How far (in ticks, a 32nd note) a measure's notes may run past its time
+/// signature before the measure is treated as overfull and lengthened. Both
+/// the timing map and the MIDI output use it, so they stay in step.
+const MEASURE_OVERFLOW_TOLERANCE_TICKS: i32 = 60;
+
 impl MidiEngine {
     pub fn generate_timing_map(score: &Score, timeline: &[usize]) -> Vec<TimingEvent> {
         let mut timing_map = Vec::new();
@@ -267,10 +272,11 @@ impl MidiEngine {
             // tempo map (walking voices in seconds and subtracting a backup at
             // the current tempo miscounts any mid-measure tempo change).
             // The nominal length too, through any tempo changes inside it.
-            let theoretical_duration_seconds = seconds_at(
+            let theoretical_ticks =
                 (current_beats as f64 * MIDI_TPQ as f64 * 4.0 / current_beat_type as f64).round()
-                    as i32,
-            );
+                    as i32;
+            let theoretical_duration_seconds = seconds_at(theoretical_ticks);
+            let mut actual_max_tick = 0;
             for (p_idx, part) in score.parts.iter().enumerate() {
                 if let Some(measure) = part.measures.get(m_idx) {
                     let mut p_tick = 0;
@@ -280,17 +286,27 @@ impl MidiEngine {
                         .as_ref()
                         .and_then(|a| a.divisions)
                         .unwrap_or(part_divisions[p_idx]);
+                    let to_ticks =
+                        |d: i32| (d as f64 * MIDI_TPQ as f64 / m_div as f64).round() as i32;
                     for el in &measure.elements {
-                        let d = match el {
-                            MeasureElement::Note(n) if !n.is_chord => n.duration,
-                            MeasureElement::Forward(d) => *d,
-                            MeasureElement::Backup(d) => -*d,
+                        match el {
+                            MeasureElement::Note(n) if !n.is_chord && n.grace.is_none() => {
+                                p_tick += to_ticks(n.duration)
+                            }
+                            MeasureElement::Forward(d) => p_tick += to_ticks(*d),
+                            // Same as generate_smf: a backup of a whole measure or
+                            // more returns to the measure start, and none goes
+                            // before it.
+                            MeasureElement::Backup(d) => {
+                                let b = to_ticks(*d);
+                                p_tick = if b >= theoretical_ticks { 0 } else { (p_tick - b).max(0) };
+                            }
                             _ => continue,
-                        };
-                        p_tick += (d as f64 * MIDI_TPQ as f64 / m_div as f64).round() as i32;
+                        }
                         max_tick = max_tick.max(p_tick);
                     }
                     actual_measure_max_seconds = actual_measure_max_seconds.max(seconds_at(max_tick));
+                    actual_max_tick = actual_max_tick.max(max_tick);
                 }
             }
 
@@ -298,7 +314,9 @@ impl MidiEngine {
                 && actual_measure_max_seconds < theoretical_duration_seconds - 0.001;
             // Same rule as generate_smf, which advances the audio by the
             // nominal measure length (or the actual one for a short pickup).
-            let final_measure_duration = if is_pickup {
+            let final_measure_duration = if is_pickup
+                || actual_max_tick > theoretical_ticks + MEASURE_OVERFLOW_TOLERANCE_TICKS
+            {
                 actual_measure_max_seconds
             } else {
                 theoretical_duration_seconds
@@ -446,7 +464,7 @@ impl MidiEngine {
         // at the tick it takes effect (not re-emitted every measure it holds).
         let mut last_emitted_time_sig: Option<(f32, i32)> = None;
 
-        for &m_idx in timeline {
+        for (timeline_pos, &m_idx) in timeline.iter().enumerate() {
             // let measure_seconds = (global_tick_of_measure_start as f32 / midi_tpq as f32) * 0.5;
             // println!("measure {}: smf {} sec", m_idx + 1, measure_seconds);
             // 1. Update Global Time Signature and Key State (from any part that has it).
@@ -542,8 +560,12 @@ impl MidiEngine {
                     let mut chord_stagger_step: u32 = 0;
                     let mut grace_stagger_tick: u32 = 0;
                     let mut onset_base_tick = p_tick;
+                    // Furthest point any voice reaches (a later voice may end
+                    // earlier than an overfull first one).
+                    let mut furthest_tick = p_tick;
 
                     for (el_idx, el) in measure.elements.iter().enumerate() {
+                        furthest_tick = furthest_tick.max(p_tick);
                         match el {
                             MeasureElement::Sound(s) => {
                                 // Tempo marks count from every part (a score may only
@@ -1012,8 +1034,10 @@ impl MidiEngine {
                                 // A grace note borrows its time from the next note (whose
                                 // onset is delayed and duration shortened by the stagger),
                                 // so it must not move the voice's position itself.
+                                // The voice always advances by the note's written length,
+                                // however much of it the grace notes took.
                                 if !note.is_chord && note.grace.is_none() {
-                                    p_tick += duration + grace_stagger_tick;
+                                    p_tick += (note.duration as f32 * tick_scale) as u32;
                                     grace_stagger_tick = 0;
                                 }
                             }
@@ -1035,7 +1059,8 @@ impl MidiEngine {
                             _ => {}
                         }
                     }
-                    let measure_consumed_ticks = p_tick - global_tick_of_measure_start;
+                    let measure_consumed_ticks =
+                        furthest_tick.max(p_tick) - global_tick_of_measure_start;
                     if measure_consumed_ticks > actual_measure_max_ticks {
                         actual_measure_max_ticks = measure_consumed_ticks;
                     }
@@ -1048,17 +1073,71 @@ impl MidiEngine {
             let is_pickup = (m_idx == 0 || score.parts[0].measures[m_idx].implicit)
                 && actual_measure_max_ticks < theoretical_duration_ticks;
 
-            let final_measure_duration = if is_pickup {
+            // An overfull measure (e.g. a cadenza written in one bar) lasts as
+            // long as its notes; a few ticks of rounding don't count.
+            let final_measure_duration = if is_pickup
+                || actual_measure_max_ticks
+                    > theoretical_duration_ticks + MEASURE_OVERFLOW_TOLERANCE_TICKS as u32
+            {
                 actual_measure_max_ticks
             } else {
                 theoretical_duration_ticks
             };
+
+            // An overfull measure was lengthened: give it a time signature that
+            // matches its real length, and restore the written one after it, so
+            // the MIDI file's own measure grid stays in step with the score.
+            if !is_pickup && final_measure_duration != theoretical_duration_ticks {
+                let ts = |ticks: u32| -> Option<(u8, u8)> {
+                    let bt = current_beat_type.max(1) as u32;
+                    [bt, 8, 16].into_iter().find_map(|den| {
+                        let unit = MIDI_TPQ_U32 * 4 / den;
+                        (ticks % unit == 0 && ticks / unit <= 255)
+                            .then(|| ((ticks / unit) as u8, den.trailing_zeros() as u8))
+                    })
+                };
+                if let Some((num, den_pow)) = ts(final_measure_duration) {
+                    let written = (
+                        current_beats.round().clamp(1.0, 255.0) as u8,
+                        (current_beat_type.max(1) as u32).trailing_zeros() as u8,
+                    );
+                    let mut changes = vec![(global_tick_of_measure_start, (num, den_pow))];
+                    // (Nothing to restore after the last measure.)
+                    if timeline_pos + 1 < timeline.len() {
+                        changes.push((global_tick_of_measure_start + final_measure_duration, written));
+                    }
+                    for (tick, (n, d)) in changes {
+                        meta_events.push(RawTrackEvent {
+                            tick,
+                            kind: midly::TrackEventKind::Meta(MetaMessage::TimeSignature(
+                                n, d, 24, 8,
+                            )),
+                        });
+                    }
+                }
+            }
 
             global_tick_of_measure_start += final_measure_duration;
         }
 
         // Convert raw events to tracks with delta times.
         // Brace-group parts (grand staff) are merged into a single track.
+        // Several time signatures on one tick (a restored one meeting the next
+        // measure's own change): only the last counts, so keep just that one.
+        let ts_ticks: Vec<u32> = meta_events
+            .iter()
+            .filter(|e| matches!(e.kind, midly::TrackEventKind::Meta(MetaMessage::TimeSignature(..))))
+            .map(|e| e.tick)
+            .collect();
+        let mut seen_ts = 0usize;
+        meta_events.retain(|e| {
+            if !matches!(e.kind, midly::TrackEventKind::Meta(MetaMessage::TimeSignature(..))) {
+                return true;
+            }
+            let tick = e.tick;
+            seen_ts += 1;
+            !ts_ticks[seen_ts..].contains(&tick)
+        });
         smf.tracks.push(Self::finalize_track(meta_events));
 
         let mut added: HashSet<usize> = HashSet::new();

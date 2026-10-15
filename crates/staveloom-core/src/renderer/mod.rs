@@ -131,6 +131,10 @@ pub struct Renderer {
     placed_notes: std::cell::RefCell<Vec<PlacedNote>>,
     /// Tuplets finished in the current measure, drawn at its end.
     pending_tuplets: std::cell::RefCell<Vec<PendingTuplet>>,
+    /// Direction texts (words, tempo marks, dynamics) placed in the current
+    /// system as (x1, x2, top, bottom, below), so later ones can be moved
+    /// clear of them.
+    placed_text_boxes: std::cell::RefCell<Vec<(f32, f32, f32, f32, bool)>>,
     /// Top y of the part being drawn, tagging `placed_notes` with their part
     /// (staff numbers repeat across parts).
     current_part_y: std::cell::Cell<f32>,
@@ -237,6 +241,7 @@ impl Default for Renderer {
             placed_slurs: std::cell::RefCell::new(Vec::new()),
             placed_notes: std::cell::RefCell::new(Vec::new()),
             pending_tuplets: std::cell::RefCell::new(Vec::new()),
+            placed_text_boxes: std::cell::RefCell::new(Vec::new()),
             current_part_y: std::cell::Cell::new(0.0),
             deferred_pedals: std::cell::RefCell::new(Vec::new()),
         }
@@ -848,6 +853,7 @@ impl Renderer {
             let sys_y_before = current_y;
             self.drawn_extent.set(None);
             self.placed_dynamics.borrow_mut().clear();
+            self.placed_text_boxes.borrow_mut().clear();
             self.placed_wedges.borrow_mut().clear();
             self.placed_slurs.borrow_mut().clear();
             self.placed_notes.borrow_mut().clear();
@@ -2206,6 +2212,24 @@ impl Renderer {
                         let mut has_right_barline = false;
                         let mut stop_beat_repeat_after_this = false;
 
+                        // A multi-measure rest starts here: set it up before choosing
+                        // how to draw the measure, so this measure is drawn as the
+                        // rest and exactly `count` measures are consumed by it.
+                        if state.multiple_rest_remaining == 0 {
+                            let count = measure
+                                .attributes
+                                .iter()
+                                .chain(measure.elements.iter().filter_map(|el| match el {
+                                    MeasureElement::Attributes(a) => Some(a),
+                                    _ => None,
+                                }))
+                                .find_map(|a| a.multiple_rest);
+                            if let Some(count) = count.filter(|&c| c > 0) {
+                                state.multiple_rest_remaining = count;
+                                state.multiple_rest_total = count;
+                            }
+                        }
+
                         if state.measure_repeat_active {
                             let center_x = measure_x + m_width * 0.5;
                             let center_y = part_start_y + 2.0 * self.staff_line_distance;
@@ -2219,10 +2243,43 @@ impl Renderer {
                                     .set("font-family", self.font_family.as_str()),
                             );
                         } else if state.multiple_rest_remaining > 0 {
+                            if state.multiple_rest_remaining == state.multiple_rest_total
+                                && id == &score.parts[0].id
+                            {
+                                // Let the playback cursor move across the rest: each
+                                // measure it stands for gets an equal share of it,
+                                // with its beats spread evenly.
+                                let total = state.multiple_rest_total.max(1);
+                                let share = m_width / total as f32;
+                                let beats = state.current_beats.max(1);
+                                let beat_units = 10080 * 4 / state.current_beat_type.max(1);
+                                let time_map: HashMap<i32, f32> = (0..beats)
+                                    .map(|b| (b * beat_units, b as f32 / beats as f32))
+                                    .collect();
+                                for k in 0..total {
+                                    let mi = m_idx + k as usize;
+                                    if mi >= part.measures.len() {
+                                        break;
+                                    }
+                                    measure_coords_in_system.push((
+                                        mi,
+                                        measure_x + share * k as f32,
+                                        share,
+                                        state.current_beats,
+                                        state.current_beat_type,
+                                        state.divisions,
+                                        time_map.clone(),
+                                    ));
+                                }
+                            }
                             if state.multiple_rest_remaining == state.multiple_rest_total {
+                              // On every staff of the part; the count only above the first.
+                              for staff_i in 0..state.num_staves.max(1) {
                                 let hbar_width = 40.0;
                                 let center_x = measure_x + m_width * 0.5;
-                                let center_y = part_start_y + 2.0 * self.staff_line_distance;
+                                let center_y = part_start_y
+                                    + staff_i as f32 * staff_dist
+                                    + 2.0 * self.staff_line_distance;
 
                                 // Draw robust H-bar using Path for better scaling
                                 let x1 = center_x - hbar_width * 0.5;
@@ -2243,15 +2300,18 @@ impl Renderer {
                                         .set("d", hbar_data),
                                 );
 
-                                sys_doc = sys_doc.add(
-                                    Text::new(state.multiple_rest_total.to_string())
-                                        .set("x", center_x)
-                                        .set("y", center_y - 2.5 * self.staff_line_distance)
-                                        .set("font-size", 14)
-                                        .set("text-anchor", "middle")
-                                        .set("font-family", "serif")
-                                        .set("font-weight", "bold"),
-                                );
+                                if staff_i == 0 {
+                                    sys_doc = sys_doc.add(
+                                        Text::new(state.multiple_rest_total.to_string())
+                                            .set("x", center_x)
+                                            .set("y", center_y - 2.5 * self.staff_line_distance)
+                                            .set("font-size", 14)
+                                            .set("text-anchor", "middle")
+                                            .set("font-family", "serif")
+                                            .set("font-weight", "bold"),
+                                    );
+                                }
+                              }
                             }
                             state.multiple_rest_remaining -= 1;
                         } else if m_width > 0.0 {
@@ -2722,10 +2782,12 @@ impl Renderer {
                                                 grace_offset,
                                                 &measure_staff_voices,
                                             );
-                                            measure_occupancy.insert(
-                                                temp_group_time_pos,
-                                                (min - part_start_y, max - part_start_y),
-                                            );
+                                            // Merge: other staves/voices share this onset.
+                                            let entry = measure_occupancy
+                                                .entry(temp_group_time_pos)
+                                                .or_insert((f32::MAX, f32::MIN));
+                                            entry.0 = entry.0.min(min - part_start_y);
+                                            entry.1 = entry.1.max(max - part_start_y);
                                             if temp_beat_repeat_active {
                                                 _temp_beat_repeat_first = false;
                                             }
@@ -2861,10 +2923,12 @@ impl Renderer {
                                                 grace_offset,
                                                 &measure_staff_voices,
                                             );
-                                            measure_occupancy.insert(
-                                                temp_group_time_pos,
-                                                (min - part_start_y, max - part_start_y),
-                                            );
+                                            // Merge: other staves/voices share this onset.
+                                            let entry = measure_occupancy
+                                                .entry(temp_group_time_pos)
+                                                .or_insert((f32::MAX, f32::MIN));
+                                            entry.0 = entry.0.min(min - part_start_y);
+                                            entry.1 = entry.1.max(max - part_start_y);
                                             if temp_beat_repeat_active {
                                                 _temp_beat_repeat_first = false;
                                             }
@@ -2877,6 +2941,7 @@ impl Renderer {
                                             self.deferred_pedals.borrow().len(),
                                             self.placed_dynamics.borrow().len(),
                                             self.placed_wedges.borrow().len(),
+                                            self.placed_text_boxes.borrow().len(),
                                         );
                                         self.draw_direction(
                                             Document::new(),
@@ -2897,6 +2962,7 @@ impl Renderer {
                                         self.deferred_pedals.borrow_mut().truncate(recorded.0);
                                         self.placed_dynamics.borrow_mut().truncate(recorded.1);
                                         self.placed_wedges.borrow_mut().truncate(recorded.2);
+                                        self.placed_text_boxes.borrow_mut().truncate(recorded.3);
                                     }
                                     MeasureElement::FiguredBass(_)
                                     | MeasureElement::Harmony(_)
@@ -2966,10 +3032,12 @@ impl Renderer {
                                     grace_offset,
                                     &measure_staff_voices,
                                 );
-                                measure_occupancy.insert(
-                                    temp_group_time_pos,
-                                    (min - part_start_y, max - part_start_y),
-                                );
+                                // Merge: other staves/voices share this onset.
+                                let entry = measure_occupancy
+                                    .entry(temp_group_time_pos)
+                                    .or_insert((f32::MAX, f32::MIN));
+                                entry.0 = entry.0.min(min - part_start_y);
+                                entry.1 = entry.1.max(max - part_start_y);
                                 if temp_beat_repeat_active {
                                     _temp_beat_repeat_first = false;
                                 }
@@ -3573,10 +3641,6 @@ impl Renderer {
                                             } else if mr.repeat_type == "stop" {
                                                 state.measure_repeat_active = false;
                                             }
-                                        }
-                                        if let Some(count) = attr.multiple_rest {
-                                            state.multiple_rest_remaining = count;
-                                            state.multiple_rest_total = count;
                                         }
                                         if let Some(br) = &attr.beat_repeat {
                                             if br.repeat_type == "start" {
@@ -4570,6 +4634,20 @@ impl Renderer {
                                 if w.is_continuation || w.resumed_line.is_some() {
                                     continue;
                                 }
+                                // A hairpin running on from an earlier measure must
+                                // also clear this measure's notes (its line was set
+                                // where it started).
+                                if w.x < measure_x {
+                                    let line = self.dynamics_line_y(
+                                        w.is_below,
+                                        w.staff,
+                                        part_start_y,
+                                        staff_dist,
+                                        measure_extreme_occ,
+                                        None,
+                                    );
+                                    w.y = if w.is_below { w.y.max(line) } else { w.y.min(line) };
+                                }
                                 let half = w.start_spread.max(12.0) / 2.0;
                                 for sl in self.placed_slurs.borrow().iter() {
                                     let ((sx1, sx2), top, bottom) =
@@ -4764,52 +4842,6 @@ impl Renderer {
                                 }
                             }
 
-                            // Handle Multi-measure rest start rendering
-                            if state.multiple_rest_remaining > 0
-                                && state.multiple_rest_remaining == state.multiple_rest_total
-                            {
-                                let hbar_width = 60.0;
-                                let center_x = measure_x + m_width * 0.5;
-                                let center_y = part_start_y + 2.0 * self.staff_line_distance;
-
-                                let x1 = center_x - hbar_width * 0.5;
-                                let x2 = center_x + hbar_width * 0.5;
-
-                                // Vertical bars (left and right)
-                                let v_data = Data::new()
-                                    .move_to((x1, center_y - 5.0))
-                                    .line_to((x1, center_y + 5.0))
-                                    .move_to((x2, center_y - 5.0))
-                                    .line_to((x2, center_y + 5.0));
-                                sys_doc = sys_doc.add(
-                                    Path::new()
-                                        .set("fill", "none")
-                                        .set("stroke", "black")
-                                        .set("stroke-width", 2.5)
-                                        .set("d", v_data),
-                                );
-
-                                // Thicker horizontal bar
-                                let h_data =
-                                    Data::new().move_to((x1, center_y)).line_to((x2, center_y));
-                                sys_doc = sys_doc.add(
-                                    Path::new()
-                                        .set("fill", "none")
-                                        .set("stroke", "black")
-                                        .set("stroke-width", 4.0)
-                                        .set("d", h_data),
-                                );
-
-                                sys_doc = sys_doc.add(
-                                    Text::new(state.multiple_rest_total.to_string())
-                                        .set("x", center_x)
-                                        .set("y", center_y - 2.5 * self.staff_line_distance)
-                                        .set("font-size", 14)
-                                        .set("text-anchor", "middle")
-                                        .set("font-family", "serif")
-                                        .set("font-weight", "bold"),
-                                );
-                            }
                         }
 
                         if stop_beat_repeat_after_this {
@@ -5340,6 +5372,24 @@ impl Renderer {
                         }
                     }
                     let half_w = self.estimate_dynamics_width(dyns) / 2.0;
+                    // Also clear the drawn notes right at the dynamic (their
+                    // stems as finally set by beams, which the measured
+                    // occupancy doesn't know).
+                    dyn_y = self.clear_of_placed_notes(
+                        local_x - half_w,
+                        local_x + half_w,
+                        10.0,
+                        6.0,
+                        dyn_y,
+                        is_below,
+                    );
+                    self.placed_text_boxes.borrow_mut().push((
+                        local_x - half_w,
+                        local_x + half_w,
+                        dyn_y - 10.0,
+                        dyn_y + 10.0,
+                        is_below,
+                    ));
                     self.placed_dynamics.borrow_mut().push((
                         local_x - half_w,
                         local_x + half_w,
@@ -5369,6 +5419,23 @@ impl Renderer {
                             text_y = text_y.min(min_y - 15.0);
                         }
                     }
+                    // Keep clear of direction texts already placed nearby.
+                    let text_w = text_str.chars().count() as f32 * 6.5;
+                    text_y = self.clear_of_text_boxes(
+                        local_x,
+                        local_x + text_w,
+                        7.0,
+                        7.0,
+                        text_y,
+                        is_below,
+                    );
+                    self.placed_text_boxes.borrow_mut().push((
+                        local_x,
+                        local_x + text_w,
+                        text_y - 7.0,
+                        text_y + 7.0,
+                        is_below,
+                    ));
                     let text = Text::new(text_str.as_str())
                         .set("x", local_x)
                         .set("y", text_y)
@@ -6304,7 +6371,7 @@ impl Renderer {
 
     fn draw_metronome_mark(
         &self,
-        mut doc: Document,
+        doc: Document,
         met: &crate::models::MetronomeMark,
         x: f32,
         part_start_y: f32,
@@ -6327,6 +6394,102 @@ impl Renderer {
             }
         }
 
+        // Measure the mark's width with a throwaway draw, then keep it clear
+        // of direction texts already placed nearby.
+        const MET_UP: f32 = 24.0;
+        const MET_DOWN: f32 = 9.0;
+        let (_, end_x) = self.draw_metronome_body(Document::new(), met, x, y_offset);
+        y_offset = self.clear_of_text_boxes(x, end_x, MET_UP, MET_DOWN, y_offset, is_below);
+        self.placed_text_boxes.borrow_mut().push((
+            x,
+            end_x,
+            y_offset - MET_UP,
+            y_offset + MET_DOWN,
+            is_below,
+        ));
+        let (doc, _) = self.draw_metronome_body(doc, met, x, y_offset);
+        let min_y = y_offset - 20.0;
+        let max_y = y_offset + 20.0;
+        (doc, min_y, max_y)
+    }
+
+    /// Moves an element spanning `x1..x2` (reaching `up` above and `down`
+    /// below its y) outward until it clears the notes of the current part
+    /// already drawn there (noteheads and stems).
+    fn clear_of_placed_notes(
+        &self,
+        x1: f32,
+        x2: f32,
+        up: f32,
+        down: f32,
+        mut y: f32,
+        is_below: bool,
+    ) -> f32 {
+        const GAP: f32 = 3.0;
+        let part_y = self.current_part_y.get();
+        let notes = self.placed_notes.borrow();
+        for _ in 0..16 {
+            let mut moved = false;
+            for pn in notes.iter().filter(|pn| pn.part_y == part_y) {
+                // Notehead box, then the stem as a thin box.
+                let mut parts = vec![(pn.x - 6.0, pn.x + 6.0, pn.top, pn.bottom)];
+                if let Some((sx, tip, _)) = pn.stem {
+                    parts.push((sx - 1.0, sx + 1.0, tip.min(pn.top), tip.max(pn.bottom)));
+                }
+                for (bx1, bx2, top, bottom) in parts {
+                    if x1 < bx2 && x2 > bx1 && y - up < bottom + GAP && y + down > top - GAP {
+                        y = if is_below { bottom + GAP + up } else { top - GAP - down };
+                        moved = true;
+                    }
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+        y
+    }
+
+    /// Moves a direction text spanning `x1..x2` (reaching `up` above and
+    /// `down` below its y) outward from the staff until it no longer
+    /// overlaps any direction text already placed on the same side.
+    fn clear_of_text_boxes(
+        &self,
+        x1: f32,
+        x2: f32,
+        up: f32,
+        down: f32,
+        mut y: f32,
+        is_below: bool,
+    ) -> f32 {
+        const GAP: f32 = 3.0;
+        let boxes = self.placed_text_boxes.borrow();
+        for _ in 0..32 {
+            let hit = boxes.iter().find(|b| {
+                b.4 == is_below
+                    && x1 < b.1 + GAP
+                    && x2 > b.0 - GAP
+                    && y - up < b.3 + GAP
+                    && y + down > b.2 - GAP
+            });
+            match hit {
+                Some(b) if is_below => y = b.3 + GAP + up,
+                Some(b) => y = b.2 - GAP - down,
+                None => break,
+            }
+        }
+        y
+    }
+
+    /// Draws a metronome mark's content starting at `x` on line `y_offset`;
+    /// returns the document and the x where the mark ends.
+    fn draw_metronome_body(
+        &self,
+        mut doc: Document,
+        met: &crate::models::MetronomeMark,
+        x: f32,
+        y_offset: f32,
+    ) -> (Document, f32) {
         let mut current_x = x;
 
         if met.parentheses {
@@ -6456,11 +6619,10 @@ impl Renderer {
                 .set("dominant-baseline", "central")
                 .set("font-family", "serif");
             doc = doc.add(right_paren);
+            current_x += 8.0;
         }
 
-        let min_y = y_offset - 20.0;
-        let max_y = y_offset + 20.0;
-        (doc, min_y, max_y)
+        (doc, current_x)
     }
 
     fn render_metronome_note(
@@ -7399,8 +7561,10 @@ impl Renderer {
             }
             return (doc, f32::MAX, f32::MIN, note_x);
         }
-        let mut min_y = note_y - 5.0;
-        let mut max_y = note_y + 5.0;
+        // Every notehead of the chord counts (not just the first one), so a
+        // wide chord's far notes are cleared by what is placed around it.
+        let mut min_y = pitches_y.iter().copied().fold(note_y, f32::min) - 5.0;
+        let mut max_y = pitches_y.iter().copied().fold(note_y, f32::max) + 5.0;
         if let Some(s) = stem {
             min_y = min_y.min(s.y_tip).min(s.y_start);
             max_y = max_y.max(s.y_tip).max(s.y_start);
