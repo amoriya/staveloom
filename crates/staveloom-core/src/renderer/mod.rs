@@ -11756,6 +11756,7 @@ impl Renderer {
         // the midpoint placement above already keeps stems reasonable.
         let mut max_needed_shift: f32 = 0.0;
         let min_stem_len = 3.0 * self.staff_line_distance;
+        let min_near_len = 2.5 * self.staff_line_distance;
         if !is_cross_staff {
             for (s_item, _) in pts.iter() {
                 let tip_y = ref_y1 + (s_item.x - ref_x1) * slope;
@@ -11777,6 +11778,17 @@ impl Renderer {
                 };
                 if current_len < min_stem_len {
                     max_needed_shift = max_needed_shift.max(min_stem_len - current_len);
+                }
+                // A chord's stem starts at its far notehead; the beam must also
+                // clear the notehead nearest to it (e.g. the top of a wide
+                // chord under an up-beam) by a reasonable stem length.
+                let near_len = if first_s.is_up {
+                    s_item.y_top - tip_y
+                } else {
+                    tip_y - s_item.y_bottom
+                };
+                if near_len < min_near_len {
+                    max_needed_shift = max_needed_shift.max(min_near_len - near_len);
                 }
             }
         }
