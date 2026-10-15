@@ -98,12 +98,26 @@ pub(crate) struct TieStartInfo {
 #[derive(Clone)]
 pub(crate) struct TupletStartInfo {
     pub x: f32,
-    pub y: f32,
     pub is_above: bool,
     pub number: i32,
     pub level: i32,
     pub bracket: bool,
     pub show_number: bool,
+    /// Staff and vertical extent (top, bottom) of the start note.
+    pub staff: i32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+/// A finished tuplet waiting to be drawn at the end of its measure, once
+/// every note under it (and its beam) has its final position.
+#[derive(Clone)]
+pub(crate) struct PendingTuplet {
+    pub start: TupletStartInfo,
+    pub x2: f32,
+    /// Vertical extent (top, bottom) of the stop note.
+    pub top2: f32,
+    pub bottom2: f32,
 }
 
 #[derive(Clone, Default, Debug)]

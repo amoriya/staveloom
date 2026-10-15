@@ -40,7 +40,6 @@ impl MidiEngine {
                 .map(|m| m.number.clone())
                 .unwrap_or_default();
             // println!("measure {}: timing_map {} sec", m_idx + 1, current_time_seconds);
-            let measure_start_tempo = current_tempo;
 
             // Update Global Time Signature and Part-specific Divisions State.
             // Mid-piece changes are carried as a `MeasureElement::Attributes` inside
@@ -110,15 +109,17 @@ impl MidiEngine {
                                     }
                                 }
                             }
-                            MeasureElement::Attributes(_) => {}
-                            _ => break,
+                            // Only elements that take up time end the measure's start
+                            // (a print/barline/etc. may come before the tempo mark).
+                            MeasureElement::Note(_)
+                            | MeasureElement::Backup(_)
+                            | MeasureElement::Forward(_) => break,
+                            _ => {}
                         }
                     }
                 }
             }
 
-            let theoretical_duration_seconds =
-                (current_beats * 4.0 / current_beat_type as f32) * (60.0 / current_tempo);
             let mut actual_measure_max_seconds = 0.0f32;
             let start_time_of_measure = current_time_seconds;
 
@@ -220,112 +221,87 @@ impl MidiEngine {
                 }
             }
 
+            let tempo_at_measure_start = current_tempo;
+            // Seconds from the start of this measure to `tick`, through every
+            // tempo change in it (including ones that fall between note onsets
+            // or at the very end, e.g. a mark after the last note).
+            let seconds_at = |tick: i32| -> f32 {
+                let mut secs = 0.0f32;
+                let mut last = 0;
+                let mut tempo = tempo_at_measure_start;
+                for (&t, &bpm) in &tempo_changes {
+                    if t <= 0 {
+                        tempo = bpm;
+                        continue;
+                    }
+                    if t >= tick {
+                        break;
+                    }
+                    secs += (t - last) as f32 * 60.0 / (tempo * MIDI_TPQ);
+                    last = t;
+                    tempo = bpm;
+                }
+                secs + (tick - last).max(0) as f32 * 60.0 / (tempo * MIDI_TPQ)
+            };
+
             // 3. Generate TimingEvents
             let sorted_points: Vec<i32> = time_points.into_iter().collect();
-            let mut prev_tick = 0;
             for &t in &sorted_points {
-                let duration_ticks = (t - prev_tick) as f32;
-                current_time_seconds += duration_ticks * (60.0 / (current_tempo * MIDI_TPQ));
-
-                if let Some(&new_tempo) = tempo_changes.get(&t) {
-                    current_tempo = new_tempo;
-                }
-
                 let relative_beat = (t as f32 / MIDI_TPQ) * (current_beat_type as f32 / 4.0);
                 timing_map.push(TimingEvent {
                     measure_index: m_idx,
                     measure_number: m_num.clone(),
                     beat_number: relative_beat + 1.0,
                     absolute_beat: accumulated_beats_total + relative_beat + 1.0,
-                    time_seconds: current_time_seconds,
+                    time_seconds: start_time_of_measure + seconds_at(t),
                     tick_offset: t,
                 });
-                prev_tick = t;
+            }
+            // The tempo in force when the measure ends carries into the next.
+            if let Some((_, &last_tempo)) = tempo_changes.iter().next_back() {
+                current_tempo = last_tempo;
             }
 
-            // 4. Update measure max seconds for next measure offset
+            // 4. Measure length actually used by the notes: the furthest tick
+            // any part reaches, converted to seconds through this measure's
+            // tempo map (walking voices in seconds and subtracting a backup at
+            // the current tempo miscounts any mid-measure tempo change).
+            // The nominal length too, through any tempo changes inside it.
+            let theoretical_duration_seconds = seconds_at(
+                (current_beats as f64 * MIDI_TPQ as f64 * 4.0 / current_beat_type as f64).round()
+                    as i32,
+            );
             for (p_idx, part) in score.parts.iter().enumerate() {
                 if let Some(measure) = part.measures.get(m_idx) {
-                    let mut p_seconds = start_time_of_measure;
                     let mut p_tick = 0;
-                    let mut local_tempo = measure_start_tempo;
-
+                    let mut max_tick = 0;
                     let m_div = measure
                         .attributes
                         .as_ref()
                         .and_then(|a| a.divisions)
                         .unwrap_or(part_divisions[p_idx]);
                     for el in &measure.elements {
-                        match el {
-                            MeasureElement::Sound(s) => {
-                                if let Some(t) = s.tempo {
-                                    local_tempo = t;
-                                }
-                            }
-                            MeasureElement::Direction(dir) => {
-                                for dt in &dir.types {
-                                    if let DirectionType::Metronome(met) = dt {
-                                        if let Some(bpm) =
-                                            met.bpm.as_ref().and_then(|s| s.parse::<f32>().ok())
-                                        {
-                                            let mut factor = 1.0;
-                                            match met.beat_unit.as_str() {
-                                                "half" => factor = 2.0,
-                                                "whole" => factor = 4.0,
-                                                "eighth" => factor = 0.5,
-                                                "16th" => factor = 0.25,
-                                                "32nd" => factor = 0.125,
-                                                _ => {}
-                                            }
-                                            if met.beat_unit_dot > 0 {
-                                                factor *= 1.5;
-                                            }
-                                            local_tempo = bpm * factor;
-                                        }
-                                    }
-                                }
-                            }
-                            MeasureElement::Note(n) if !n.is_chord => {
-                                p_seconds +=
-                                    (n.duration as f32 / m_div as f32) * (60.0 / local_tempo);
-                                p_tick += (n.duration as f64 * MIDI_TPQ as f64 / m_div as f64)
-                                    .round() as i32;
-                                if let Some(&new_t) = tempo_changes.get(&p_tick) {
-                                    local_tempo = new_t;
-                                }
-                            }
-                            MeasureElement::Backup(d) => {
-                                p_seconds -= (*d as f32 / m_div as f32) * (60.0 / local_tempo);
-                                p_tick -=
-                                    (*d as f64 * MIDI_TPQ as f64 / m_div as f64).round() as i32;
-                                if let Some(&new_t) = tempo_changes.get(&p_tick) {
-                                    local_tempo = new_t;
-                                }
-                            }
-                            MeasureElement::Forward(d) => {
-                                p_seconds += (*d as f32 / m_div as f32) * (60.0 / local_tempo);
-                                p_tick +=
-                                    (*d as f64 * MIDI_TPQ as f64 / m_div as f64).round() as i32;
-                                if let Some(&new_t) = tempo_changes.get(&p_tick) {
-                                    local_tempo = new_t;
-                                }
-                            }
-                            _ => {}
-                        }
+                        let d = match el {
+                            MeasureElement::Note(n) if !n.is_chord => n.duration,
+                            MeasureElement::Forward(d) => *d,
+                            MeasureElement::Backup(d) => -*d,
+                            _ => continue,
+                        };
+                        p_tick += (d as f64 * MIDI_TPQ as f64 / m_div as f64).round() as i32;
+                        max_tick = max_tick.max(p_tick);
                     }
-                    let consumed = p_seconds - start_time_of_measure;
-                    if consumed > actual_measure_max_seconds {
-                        actual_measure_max_seconds = consumed;
-                    }
+                    actual_measure_max_seconds = actual_measure_max_seconds.max(seconds_at(max_tick));
                 }
             }
 
             let is_pickup = (m_idx == 0 || score.parts[0].measures[m_idx].implicit)
                 && actual_measure_max_seconds < theoretical_duration_seconds - 0.001;
+            // Same rule as generate_smf, which advances the audio by the
+            // nominal measure length (or the actual one for a short pickup).
             let final_measure_duration = if is_pickup {
                 actual_measure_max_seconds
             } else {
-                theoretical_duration_seconds.max(actual_measure_max_seconds)
+                theoretical_duration_seconds
             };
 
             current_time_seconds = start_time_of_measure + final_measure_duration;
@@ -570,16 +546,17 @@ impl MidiEngine {
                     for (el_idx, el) in measure.elements.iter().enumerate() {
                         match el {
                             MeasureElement::Sound(s) => {
+                                // Tempo marks count from every part (a score may only
+                                // write them on an inner part), as in generate_timing_map;
+                                // at the same tick the later part wins there and here.
                                 if let Some(t) = s.tempo {
-                                    if p_idx == 0 {
-                                        let tempo_val = (60_000_000.0 / t) as u32;
-                                        meta_events.push(RawTrackEvent {
-                                            tick: p_tick,
-                                            kind: midly::TrackEventKind::Meta(MetaMessage::Tempo(
-                                                tempo_val.into(),
-                                            )),
-                                        });
-                                    }
+                                    let tempo_val = (60_000_000.0 / t) as u32;
+                                    meta_events.push(RawTrackEvent {
+                                        tick: p_tick,
+                                        kind: midly::TrackEventKind::Meta(MetaMessage::Tempo(
+                                            tempo_val.into(),
+                                        )),
+                                    });
                                 }
                             }
                             MeasureElement::Direction(dir) => {
@@ -602,18 +579,14 @@ impl MidiEngine {
                                                     }
                                                     let adjusted_bpm = bpm * factor;
 
-                                                    if p_idx == 0 {
-                                                        let tempo_val =
-                                                            (60_000_000.0 / adjusted_bpm) as u32;
-                                                        meta_events.push(RawTrackEvent {
-                                                            tick: p_tick,
-                                                            kind: midly::TrackEventKind::Meta(
-                                                                MetaMessage::Tempo(
-                                                                    tempo_val.into(),
-                                                                ),
-                                                            ),
-                                                        });
-                                                    }
+                                                    let tempo_val =
+                                                        (60_000_000.0 / adjusted_bpm) as u32;
+                                                    meta_events.push(RawTrackEvent {
+                                                        tick: p_tick,
+                                                        kind: midly::TrackEventKind::Meta(
+                                                            MetaMessage::Tempo(tempo_val.into()),
+                                                        ),
+                                                    });
                                                 }
                                             }
                                         }
@@ -754,8 +727,8 @@ impl MidiEngine {
                                 let duration = if note.grace.is_some() {
                                     grace_unit
                                 } else {
-                                    ((note.duration as f32 * tick_scale) as u32
-                                        - grace_stagger_tick)
+                                    ((note.duration as f32 * tick_scale) as u32)
+                                        .saturating_sub(grace_stagger_tick)
                                         .max(1)
                                 };
 
@@ -1036,8 +1009,11 @@ impl MidiEngine {
                                         }
                                     }
                                 }
-                                if !note.is_chord {
-                                    p_tick += duration;
+                                // A grace note borrows its time from the next note (whose
+                                // onset is delayed and duration shortened by the stagger),
+                                // so it must not move the voice's position itself.
+                                if !note.is_chord && note.grace.is_none() {
+                                    p_tick += duration + grace_stagger_tick;
                                     grace_stagger_tick = 0;
                                 }
                             }

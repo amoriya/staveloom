@@ -129,12 +129,18 @@ pub struct Renderer {
     /// including ones read before the slur started (e.g. the upper staff's
     /// notes in the slur's first measure).
     placed_notes: std::cell::RefCell<Vec<PlacedNote>>,
+    /// Tuplets finished in the current measure, drawn at its end.
+    pending_tuplets: std::cell::RefCell<Vec<PendingTuplet>>,
+    /// Top y of the part being drawn, tagging `placed_notes` with their part
+    /// (staff numbers repeat across parts).
+    current_part_y: std::cell::Cell<f32>,
 }
 
 /// A drawn note (chord) in the current system: staff, notehead x and
 /// vertical extent, and its stem (x, tip y, is up) if any.
 #[derive(Clone, Copy)]
 struct PlacedNote {
+    part_y: f32,
     staff: i32,
     x: f32,
     top: f32,
@@ -230,6 +236,8 @@ impl Default for Renderer {
             placed_wedges: std::cell::RefCell::new(Vec::new()),
             placed_slurs: std::cell::RefCell::new(Vec::new()),
             placed_notes: std::cell::RefCell::new(Vec::new()),
+            pending_tuplets: std::cell::RefCell::new(Vec::new()),
+            current_part_y: std::cell::Cell::new(0.0),
             deferred_pedals: std::cell::RefCell::new(Vec::new()),
         }
     }
@@ -843,6 +851,7 @@ impl Renderer {
             self.placed_wedges.borrow_mut().clear();
             self.placed_slurs.borrow_mut().clear();
             self.placed_notes.borrow_mut().clear();
+            self.pending_tuplets.borrow_mut().clear();
             self.deferred_pedals.borrow_mut().clear();
             let current_margin_left = if sys_idx == 0 {
                 first_margin
@@ -1829,6 +1838,7 @@ impl Renderer {
             // y = 0; their stem tips must not re-anchor this system's slurs.
             self.beamed_stem_tips.borrow_mut().clear();
             self.placed_notes.borrow_mut().clear();
+            self.pending_tuplets.borrow_mut().clear();
             let mut measure_coords_in_system = Vec::new();
             let mut system_metadata_y = (0.0, 0.0);
 
@@ -1960,6 +1970,7 @@ impl Renderer {
                     let part = score.parts.iter().find(|p| p.id == *id).unwrap();
                     let state = part_states.get_mut(id).unwrap();
                     let part_start_y = system_render_y + *part_y_offsets.get(id).unwrap();
+                    self.current_part_y.set(part_start_y);
                     let staff_dist = part_staff_distances
                         .get(id)
                         .cloned()
@@ -2350,6 +2361,10 @@ impl Renderer {
                             }
 
                             let mut measure_occupancy = HashMap::new();
+                            // The measuring pass below also records notes and
+                            // finished tuplets; only the real pass's may stay.
+                            let placed_notes_len = self.placed_notes.borrow().len();
+                            let pending_tuplets_len = self.pending_tuplets.borrow().len();
                             let mut temp_time_pos = 0;
                             let mut temp_chord_group = Vec::new();
                             let mut temp_group_time_pos = 0;
@@ -2960,6 +2975,8 @@ impl Renderer {
                                 }
                             }
 
+                            self.placed_notes.borrow_mut().truncate(placed_notes_len);
+                            self.pending_tuplets.borrow_mut().truncate(pending_tuplets_len);
                             // Update active octave shifts based on the pre-calculated measure occupancy
                             // to ensure they clear all notes in this measure.
                             for (&_num, start_info) in state.active_octave_shifts.iter_mut() {
@@ -4476,7 +4493,14 @@ impl Renderer {
                                 }
                             }
                             sys_doc = self.flush_active_beams(sys_doc, &mut active_beams);
+                            // Beam groups closed by the flush: apply their final
+                            // stem tips before drawing what depends on them.
+                            let beam_tips: Vec<BeamedStemTip> =
+                                self.beamed_stem_tips.borrow_mut().drain(..).collect();
+                            Self::reanchor_slurs_to_beams(&mut state.active_slurs, &beam_tips);
+                            self.apply_beam_tips_to_placed_notes(&beam_tips);
                             sys_doc = self.flush_known_end_slurs(sys_doc, &mut state.active_slurs);
+                            sys_doc = self.flush_pending_tuplets(sys_doc);
                             // A slur stop whose start never appeared in this measure
                             // can't be paired; drop it.
                             state.active_slurs.retain(|_, s| s.pending_stop.is_none());
@@ -6920,7 +6944,7 @@ impl Renderer {
                 // staff's noteheads and stems hanging into it.
                 let upper_top = part_start_y + (s as f32 - 1.0) * staff_dist;
                 let lower_bottom = lower_top + 4.0 * self.staff_line_distance;
-                for pn in self.placed_notes.borrow().iter() {
+                for pn in self.placed_notes.borrow().iter().filter(|pn| pn.part_y == part_start_y) {
                     let stem_tip = |up: bool| match pn.stem {
                         Some((sx, tip, is_up)) if is_up == up => Some((sx, tip)),
                         _ => None,
@@ -10358,7 +10382,7 @@ impl Renderer {
 
     fn process_tuplets(
         &self,
-        mut doc: Document,
+        doc: Document,
         notes: &[&Note],
         x: f32,
         mut min_y: f32,
@@ -10374,13 +10398,18 @@ impl Renderer {
                     bracket,
                     show_number,
                     actual_notes,
+                    placement,
                     ..
                 } = notation
                 {
                     let num = number.unwrap_or(1);
                     match note_type.as_str() {
                         "start" => {
-                            let is_above = if let Some(s) = stem { s.is_up } else { true };
+                            let is_above = match placement.as_deref() {
+                                Some("above") => true,
+                                Some("below") => false,
+                                _ => stem.map_or(true, |s| s.is_up),
+                            };
                             let level = active_tuplets.len() as i32;
                             let tuplet_y = if is_above {
                                 min_y - 15.0 - (level as f32 * 10.0)
@@ -10404,12 +10433,14 @@ impl Renderer {
                                 num,
                                 TupletStartInfo {
                                     x: tuplet_x,
-                                    y: tuplet_y,
                                     is_above,
                                     number: display_number,
                                     level,
                                     bracket: is_bracket,
                                     show_number: is_show_num,
+                                    staff: first_note.staff.unwrap_or(1),
+                                    top: min_y,
+                                    bottom: max_y,
                                 },
                             );
                             if is_above {
@@ -10421,39 +10452,15 @@ impl Renderer {
                         "stop" => {
                             if let Some(start_info) = active_tuplets.remove(&num) {
                                 let is_above = start_info.is_above;
-                                let level = start_info.level;
-                                let mut end_y = if is_above {
-                                    min_y - 15.0 - (level as f32 * 10.0)
-                                } else {
-                                    max_y + 15.0 + (level as f32 * 10.0)
-                                };
                                 let tuplet_end_x = if let Some(s) = stem { s.x } else { x };
-
-                                // Apply slope clamping (max 15 degrees) to match beam slope standard
-                                let dx = tuplet_end_x - start_info.x;
-                                if dx.abs() > 0.1 {
-                                    let mut slope = (end_y - start_info.y) / dx;
-                                    let max_slope = 0.2679; // tan(15 deg)
-                                    if slope > max_slope {
-                                        slope = max_slope;
-                                        end_y = start_info.y + slope * dx;
-                                    } else if slope < -max_slope {
-                                        slope = -max_slope;
-                                        end_y = start_info.y + slope * dx;
-                                    }
-                                }
-
-                                doc = self.draw_tuplet(
-                                    doc,
-                                    start_info.x,
-                                    start_info.y,
-                                    tuplet_end_x,
-                                    end_y,
-                                    is_above,
-                                    start_info.number,
-                                    start_info.bracket,
-                                    start_info.show_number,
-                                );
+                                // Drawn at the end of the measure, once all the
+                                // notes under it have their final positions.
+                                self.pending_tuplets.borrow_mut().push(PendingTuplet {
+                                    start: start_info,
+                                    x2: tuplet_end_x,
+                                    top2: min_y,
+                                    bottom2: max_y,
+                                });
                                 if is_above {
                                     min_y -= 20.0;
                                 } else {
@@ -10715,23 +10722,10 @@ impl Renderer {
             let stem_x = stem.map(|s| s.x).unwrap_or(x);
             let notehead_x = note_xs.first().copied().unwrap_or(x);
             {
+                self.apply_beam_tips_to_placed_notes(beam_tips);
                 let mut placed = self.placed_notes.borrow_mut();
-                // Beam groups just finished: move their notes' stems to the
-                // final tips.
-                for b in beam_tips {
-                    for pn in placed.iter_mut() {
-                        if let Some((sx, tip, _)) = pn.stem.as_mut() {
-                            if pn.staff == b.staff
-                                && (*sx - b.orig_x).abs() < 0.5
-                                && (*tip - b.tip_y).abs() < 120.0
-                            {
-                                *sx = b.x;
-                                *tip = if b.is_up { b.tip_y } else { b.tip_y + b.beam_thickness };
-                            }
-                        }
-                    }
-                }
                 placed.push(PlacedNote {
+                    part_y: self.current_part_y.get(),
                     staff: first_note.staff.unwrap_or(1),
                     x: notehead_x,
                     top: min_pitch_y - 5.0,
@@ -11003,6 +10997,102 @@ impl Renderer {
         (doc, min_y, max_y)
     }
 
+    /// Moves the stems of already placed notes onto the final tips of the beam
+    /// groups just drawn.
+    fn apply_beam_tips_to_placed_notes(&self, beam_tips: &[BeamedStemTip]) {
+        let mut placed = self.placed_notes.borrow_mut();
+        for b in beam_tips {
+            for pn in placed.iter_mut() {
+                if let Some((sx, tip, _)) = pn.stem.as_mut() {
+                    if pn.staff == b.staff
+                        && (*sx - b.orig_x).abs() < 0.5
+                        && (*tip - b.tip_y).abs() < 120.0
+                    {
+                        *sx = b.x;
+                        *tip = if b.is_up { b.tip_y } else { b.tip_y + b.beam_thickness };
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draws the tuplets finished in this measure. The bracket (or number)
+    /// sits just outside the notes at either end, tilted no more than 15°,
+    /// then moved out as far as needed to clear every note in between.
+    fn flush_pending_tuplets(&self, mut doc: Document) -> Document {
+        const END_GAP: f32 = 10.0;
+        const CLEARANCE: f32 = 10.0;
+        let pending: Vec<PendingTuplet> = self.pending_tuplets.borrow_mut().drain(..).collect();
+        for t in pending {
+            let s = &t.start;
+            let (x1, x2) = (s.x.min(t.x2), s.x.max(t.x2));
+            let dir = if s.is_above { -1.0 } else { 1.0 };
+            let outer = |a: f32, b: f32| if s.is_above { a.min(b) } else { a.max(b) };
+            let near_top = s.top.min(t.top2) - 120.0;
+            let near_bottom = s.bottom.max(t.bottom2) + 120.0;
+            // Extreme points of the notes under the tuplet on its side.
+            let mut pts: Vec<(f32, f32)> = Vec::new();
+            for pn in self.placed_notes.borrow().iter() {
+                if pn.part_y != self.current_part_y.get()
+                    || pn.staff != s.staff
+                    || pn.x < x1 - 8.0
+                    || pn.x > x2 + 8.0
+                    || pn.bottom < near_top
+                    || pn.top > near_bottom
+                {
+                    continue;
+                }
+                pts.push((pn.x, if s.is_above { pn.top } else { pn.bottom }));
+                if let Some((sx, tip, up)) = pn.stem {
+                    if up == s.is_above {
+                        pts.push((sx, tip));
+                    }
+                }
+            }
+            let end_extreme = |x: f32, own: f32| {
+                pts.iter()
+                    .filter(|p| (p.0 - x).abs() < 8.0)
+                    .fold(own, |acc, p| outer(acc, p.1))
+            };
+            let own1 = if s.is_above { s.top } else { s.bottom };
+            let own2 = if s.is_above { t.top2 } else { t.bottom2 };
+            let offset = dir * (END_GAP + s.level as f32 * 10.0);
+            let mut y1 = end_extreme(s.x, own1) + offset;
+            let mut y2 = end_extreme(t.x2, own2) + offset;
+            // Clamp the slope to 15° (like a beam), keeping the outer end.
+            let dx = t.x2 - s.x;
+            if dx.abs() > 0.1 {
+                let max_dy = 0.2679 * dx.abs();
+                if (y2 - y1).abs() > max_dy {
+                    if outer(y1, y2) == y1 {
+                        y2 = y1 + (y2 - y1).signum() * max_dy;
+                    } else {
+                        y1 = y2 + (y1 - y2).signum() * max_dy;
+                    }
+                }
+                // Move the whole line out until every note clears it.
+                let mut shift: f32 = 0.0;
+                for &(px, py) in &pts {
+                    let tt = ((px - s.x) / dx).clamp(0.0, 1.0);
+                    let line_y = y1 + (y2 - y1) * tt;
+                    let need = if s.is_above {
+                        line_y - (py - CLEARANCE)
+                    } else {
+                        (py + CLEARANCE) - line_y
+                    };
+                    shift = shift.max(need);
+                }
+                y1 += dir * shift;
+                y2 += dir * shift;
+            }
+            doc = self.draw_tuplet(
+                doc, s.x, y1, t.x2, y2, s.is_above, s.number, s.bracket, s.show_number,
+            );
+            self.note_drawn_extent(y1.min(y2) - 10.0, y1.max(y2) + 10.0);
+        }
+        doc
+    }
+
     /// Draws the slurs whose end was known before their start (see
     /// `SlurStartInfo::known_end`) now that the measure's notes are placed.
     fn flush_known_end_slurs(
@@ -11045,8 +11135,10 @@ impl Renderer {
         is_above: bool,
     ) -> Vec<(f32, f32)> {
         let mut out = Vec::new();
+        let part_y = self.current_part_y.get();
         for pn in self.placed_notes.borrow().iter() {
-            if pn.staff != staff
+            if pn.part_y != part_y
+                || pn.staff != staff
                 || pn.x <= x1
                 || pn.x >= x2
                 || pn.bottom < near_top - 120.0
