@@ -28,10 +28,9 @@ pub(crate) struct SlurStartInfo {
     pub y: f32,
     pub is_above: bool,
     pub is_continuation: bool,
-    /// Staff/voice of the start note — only notes in the same staff and voice
-    /// are recorded as obstacles the slur curve must clear.
+    /// Staff of the start note — notes in the same staff are recorded as
+    /// obstacles the slur curve must clear.
     pub staff: i32,
-    pub voice: i32,
     /// Extreme points (x, y) of the notes spanned by the slur (noteheads and
     /// stem tips on the slur's side), in the current system's coordinates.
     pub obstacles: Vec<(f32, f32)>,
@@ -39,7 +38,37 @@ pub(crate) struct SlurStartInfo {
     /// (rather than its notehead), so it must follow the stem if a beam later
     /// lengthens or shortens it.
     pub stem_anchor: bool,
+    /// Set when this entry is not an open slur but a "stop" that appeared in
+    /// the file before its matching "start" (common when a slur runs from a
+    /// lower staff to an upper one: the upper staff's notes come first in the
+    /// measure). Holds the stop note's endpoint for either placement; it is
+    /// paired when the start shows up later in the same measure.
+    pub pending_stop: Option<PendingSlurStop>,
+    /// Set when the slur's end is already known (its stop was read before its
+    /// start): the slur stays open only to collect obstacles and is drawn at
+    /// the end of the measure as (end x, end y, end staff, end note top,
+    /// end note bottom).
+    pub known_end: Option<(f32, f32, i32, f32, f32)>,
 }
+
+/// Endpoint candidates of a slur stop seen before its start.
+#[derive(Clone, Copy)]
+pub(crate) struct PendingSlurStop {
+    pub above: (f32, f32),
+    pub below: (f32, f32),
+    /// Staff and vertical extent (top, bottom) of the stop note.
+    pub staff: i32,
+    pub top: f32,
+    pub bottom: f32,
+}
+
+/// Key offset under which pending slur stops are stored in the active-slur
+/// map, so they never collide with an open slur of the same number.
+pub(crate) const PENDING_SLUR_STOP_KEY: i32 = 1 << 20;
+
+/// Key offset for slurs whose end is already known (see
+/// `SlurStartInfo::known_end`).
+pub(crate) const KNOWN_SLUR_END_KEY: i32 = 1 << 21;
 
 /// Final geometry of one beamed stem, reported by `draw_beam_group` so slurs
 /// attached to that stem can be moved to clear the beam.
@@ -54,6 +83,8 @@ pub(crate) struct BeamedStemTip {
     pub is_up: bool,
     /// Primary beam thickness; for down stems the beam lies below `tip_y`.
     pub beam_thickness: f32,
+    /// Staff of the stem's note.
+    pub staff: i32,
 }
 
 #[derive(Clone)]
