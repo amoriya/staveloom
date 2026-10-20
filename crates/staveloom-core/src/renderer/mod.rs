@@ -111,12 +111,23 @@ pub struct Renderer {
     /// while drawing, after the system's height was laid out, so the system's
     /// slice is grown to fit them.
     drawn_extent: std::cell::Cell<Option<(f32, f32)>>,
-    /// Dynamics drawn in the current system as (left x, right x, y, below),
-    /// so hairpins on the same line can be shortened to avoid them.
-    placed_dynamics: std::cell::RefCell<Vec<(f32, f32, f32, bool)>>,
+    /// Dynamics drawn in the current system as (left x, right x, y, below,
+    /// staff), so hairpins on the same line can be shortened to avoid them.
+    placed_dynamics: std::cell::RefCell<Vec<(f32, f32, f32, bool, i32)>>,
     /// Hairpin segments drawn in the current system as (x1, x2, bottom y,
     /// top y), so pedal lines can be kept clear of them.
     placed_wedges: std::cell::RefCell<Vec<(f32, f32, f32, f32)>>,
+    /// Directions drawn in the current system, by staff and side.
+    gap_items: std::cell::RefCell<Vec<GapItem>>,
+    /// x range of the measure whose directions are being placed.
+    measure_span: std::cell::Cell<(f32, f32)>,
+    /// Index of that measure in its part.
+    current_measure_idx: std::cell::Cell<usize>,
+    /// Hairpins (part id -> (start measure index, number)) that would sit
+    /// between two staves but cross a measure with a cross-staff beam, which
+    /// fills that gap: they go outside the part on every system instead.
+    outer_wedges: std::cell::RefCell<HashMap<String, HashSet<(usize, i32)>>>,
+    current_part_id: std::cell::RefCell<String>,
     /// Slur curves drawn in the current system as (x1, x2, top y, bottom y,
     /// higher endpoint y, lower endpoint y), so dynamics and hairpins can be
     /// kept clear of them and colliding slurs between staves detected.
@@ -150,6 +161,23 @@ struct PlacedNote {
     top: f32,
     bottom: f32,
     stem: Option<(f32, f32, bool)>,
+    /// Its stem joins a beam spanning two staves, so its length follows the
+    /// staff gap.
+    cross_beam: bool,
+}
+
+/// A direction drawn in the current system (hairpin, dynamic, words, octave
+/// line), with the staff it belongs to and its side, so those sitting between
+/// two staves can be checked against the other staff.
+#[derive(Clone, Copy)]
+struct GapItem {
+    part_y: f32,
+    staff: i32,
+    is_below: bool,
+    x1: f32,
+    x2: f32,
+    top: f32,
+    bottom: f32,
 }
 
 /// A slur curve drawn in the current system (see `Renderer::placed_slurs`):
@@ -166,6 +194,12 @@ struct PlacedSlur {
     y2: f32,
     top: f32,
     bottom: f32,
+    /// Ends on a different staff than it starts: one end moves with each
+    /// staff, so widening the gap between them only stretches it.
+    cross_staff: bool,
+    /// Staff of its start note, and the top of its part.
+    staff: i32,
+    part_y: f32,
 }
 
 impl PlacedSlur {
@@ -238,6 +272,11 @@ impl Default for Renderer {
             drawn_extent: std::cell::Cell::new(None),
             placed_dynamics: std::cell::RefCell::new(Vec::new()),
             placed_wedges: std::cell::RefCell::new(Vec::new()),
+            gap_items: std::cell::RefCell::new(Vec::new()),
+            measure_span: std::cell::Cell::new((0.0, 0.0)),
+            current_measure_idx: std::cell::Cell::new(0),
+            outer_wedges: std::cell::RefCell::new(HashMap::new()),
+            current_part_id: std::cell::RefCell::new(String::new()),
             placed_slurs: std::cell::RefCell::new(Vec::new()),
             placed_notes: std::cell::RefCell::new(Vec::new()),
             pending_tuplets: std::cell::RefCell::new(Vec::new()),
@@ -342,6 +381,10 @@ struct WedgeStartInfo {
     /// Continued from a previous system and not yet placed on this system's
     /// dynamics line (`None`), or the line it has been placed on (`Some`).
     resumed_line: Option<Option<f32>>,
+    /// Placed in the gap to the next staff (decided once for the whole
+    /// hairpin, see `Renderer::outer_wedges`), so it keeps that side on every
+    /// system it crosses.
+    in_gap: bool,
 }
 
 #[derive(Clone)]
@@ -785,6 +828,11 @@ impl Renderer {
         let mut measure_to_sys: HashMap<usize, usize> = HashMap::new();
 
         // Persistent state across systems
+        *self.outer_wedges.borrow_mut() = score
+            .parts
+            .iter()
+            .map(|p| (p.id.clone(), Self::outer_wedges(p)))
+            .collect();
         let mut part_states: HashMap<String, PartState> = HashMap::new();
         let mut all_measure_render_info = HashMap::new();
         for part in &score.parts {
@@ -855,6 +903,7 @@ impl Renderer {
             self.placed_dynamics.borrow_mut().clear();
             self.placed_text_boxes.borrow_mut().clear();
             self.placed_wedges.borrow_mut().clear();
+            self.gap_items.borrow_mut().clear();
             self.placed_slurs.borrow_mut().clear();
             self.placed_notes.borrow_mut().clear();
             self.pending_tuplets.borrow_mut().clear();
@@ -1977,6 +2026,7 @@ impl Renderer {
                     let state = part_states.get_mut(id).unwrap();
                     let part_start_y = system_render_y + *part_y_offsets.get(id).unwrap();
                     self.current_part_y.set(part_start_y);
+                    *self.current_part_id.borrow_mut() = id.clone();
                     let staff_dist = part_staff_distances
                         .get(id)
                         .cloned()
@@ -2123,7 +2173,16 @@ impl Renderer {
                     }
                     for p in state.active_pedals.values_mut() {
                         if p.is_continuation {
-                            p.y = part_start_y + p.y;
+                            // Restart from this system's own pedal line: the
+                            // previous system's height (and staff gap) don't
+                            // apply here; each measure pushes it clear again.
+                            p.y = if p.is_below {
+                                part_start_y
+                                    + (state.num_staves as f32 - 1.0) * staff_dist
+                                    + 10.0 * self.staff_line_distance
+                            } else {
+                                part_start_y - 4.0 * self.staff_line_distance
+                            };
                             p.x = current_margin_left;
                             p.is_continuation = false;
                         } else {
@@ -2942,6 +3001,7 @@ impl Renderer {
                                             self.placed_dynamics.borrow().len(),
                                             self.placed_wedges.borrow().len(),
                                             self.placed_text_boxes.borrow().len(),
+                                            self.gap_items.borrow().len(),
                                         );
                                         self.draw_direction(
                                             Document::new(),
@@ -2963,6 +3023,7 @@ impl Renderer {
                                         self.placed_dynamics.borrow_mut().truncate(recorded.1);
                                         self.placed_wedges.borrow_mut().truncate(recorded.2);
                                         self.placed_text_boxes.borrow_mut().truncate(recorded.3);
+                                        self.gap_items.borrow_mut().truncate(recorded.4);
                                     }
                                     MeasureElement::FiguredBass(_)
                                     | MeasureElement::Harmony(_)
@@ -3820,10 +3881,10 @@ impl Renderer {
                                                 if shift.shift_type == "up"
                                                     || shift.shift_type == "down"
                                                 {
-                                                    let staff_number = dir.staff.unwrap_or(1);
-                                                    let is_below = dir.placement.as_deref()
-                                                        == Some("below")
-                                                        || staff_number >= 2;
+                                                    let is_below = Self::octave_shift_below(
+                                                        dir.placement.as_deref(),
+                                                        &shift.shift_type,
+                                                    );
                                                     let y_offset = part_start_y
                                                         - 4.0 * self.staff_line_distance;
                                                     state.active_octave_shifts.insert(
@@ -4582,6 +4643,8 @@ impl Renderer {
                                 measure_min_y = measure_min_y.min(m_min);
                                 measure_max_y = measure_max_y.max(m_max);
                             }
+                            self.measure_span.set((measure_x, measure_x + m_width));
+                            self.current_measure_idx.set(m_idx);
                             let mut measure_extreme_occ = if measure_min_y <= measure_max_y {
                                 Some((measure_min_y + part_start_y, measure_max_y + part_start_y))
                             } else {
@@ -4641,6 +4704,8 @@ impl Renderer {
                                     let line = self.dynamics_line_y(
                                         w.is_below,
                                         w.staff,
+                                        num_staves,
+                                        Some(w.in_gap),
                                         part_start_y,
                                         staff_dist,
                                         measure_extreme_occ,
@@ -4649,10 +4714,18 @@ impl Renderer {
                                     w.y = if w.is_below { w.y.max(line) } else { w.y.min(line) };
                                 }
                                 let half = w.start_spread.max(12.0) / 2.0;
+                                // Between staves, the other staff's slurs are
+                                // cleared by widening the gap instead.
+                                let between = w.in_gap;
                                 for sl in self.placed_slurs.borrow().iter() {
                                     let ((sx1, sx2), top, bottom) =
                                         (sl.x_range(), sl.top, sl.bottom);
                                     if sx1 >= measure_x + m_width || sx2 <= w.x {
+                                        continue;
+                                    }
+                                    // (Nor cross-staff ones, whose far end
+                                    // moves with the gap.)
+                                    if between && (sl.staff != w.staff || sl.cross_staff) {
                                         continue;
                                     }
                                     // Only slurs whose curve actually reaches the
@@ -4674,6 +4747,8 @@ impl Renderer {
                                 let line = self.dynamics_line_y(
                                     w.is_below,
                                     w.staff,
+                                    num_staves,
+                                    Some(w.in_gap),
                                     part_start_y,
                                     staff_dist,
                                     measure_extreme_occ,
@@ -4686,6 +4761,23 @@ impl Renderer {
                                 };
                                 w.y = line;
                                 w.resumed_line = Some(Some(line));
+                            }
+                            // Hairpins are only drawn at their end; register the
+                            // stretch running through this measure now so the
+                            // directions placed below clear it.
+                            for w in state.active_wedges.values() {
+                                if w.is_continuation && w.resumed_line.is_none() {
+                                    continue;
+                                }
+                                let half = w.start_spread.max(12.0) / 2.0;
+                                self.push_gap_item(
+                                    w.staff,
+                                    w.is_below,
+                                    w.x.max(measure_x),
+                                    measure_x + m_width,
+                                    w.y - half,
+                                    w.y + half,
+                                );
                             }
                             for element in priority_elements {
                                 let time = element.time_pos;
@@ -4951,6 +5043,8 @@ impl Renderer {
                                     &start_info.wedge_type,
                                     start_info.start_spread,
                                     mid_spread,
+                                    start_info.staff,
+                                    start_info.is_below,
                                 );
                                 start_info.x = current_margin_left;
                                 start_info.y = start_info.y - part_start_y; // Store as relative offset
@@ -4961,6 +5055,7 @@ impl Renderer {
                             }
                             // 3. Octave Shifts
                             for (&_num, start_info) in state.active_octave_shifts.iter_mut() {
+                                start_info.y = self.octave_shift_clear_y(start_info, system_end_x);
                                 sys_doc = self.draw_octave_shift(
                                     sys_doc,
                                     start_info.x,
@@ -4970,6 +5065,7 @@ impl Renderer {
                                     start_info.size,
                                     &start_info.shift_type,
                                     start_info.is_below,
+                                    start_info.staff.unwrap_or(1),
                                 );
                                 start_info.x = current_margin_left;
                                 start_info.y = start_info.y - part_start_y; // Store as relative offset
@@ -5028,6 +5124,7 @@ impl Renderer {
                                     end_y,
                                     start_info.is_above,
                                     &start_info.obstacles,
+                                    start_info.staff,
                                 );
                                 start_info.obstacles.clear();
                                 start_info.x = current_margin_left;
@@ -5328,7 +5425,14 @@ impl Renderer {
         } else {
             part_start_y + (target_staff as f32 - 1.0) * staff_dist - 2.0 * self.staff_line_distance
         };
-        if let Some((min_y, max_y)) = local_occ {
+        let between = self.in_staff_gap(target_staff, is_below, num_staves);
+        // Between staves, clear only this staff's notes (see `dynamics_line_y`).
+        let clear_occ = if between {
+            self.staff_extent_in_measure(target_staff)
+        } else {
+            local_occ
+        };
+        if let Some((min_y, max_y)) = clear_occ {
             if is_below {
                 shared_y = shared_y.max(max_y + 20.0);
             } else {
@@ -5344,6 +5448,8 @@ impl Renderer {
                     let mut dyn_y = self.dynamics_line_y(
                         is_below,
                         target_staff,
+                        num_staves,
+                        None,
                         part_start_y,
                         staff_dist,
                         measure_extreme_occ,
@@ -5382,6 +5488,15 @@ impl Renderer {
                         6.0,
                         dyn_y,
                         is_below,
+                        between.then_some(target_staff),
+                    );
+                    self.push_gap_item(
+                        target_staff,
+                        is_below,
+                        local_x - half_w,
+                        local_x + half_w,
+                        dyn_y - 10.0,
+                        dyn_y + 6.0,
                     );
                     self.placed_text_boxes.borrow_mut().push((
                         local_x - half_w,
@@ -5395,6 +5510,7 @@ impl Renderer {
                         local_x + half_w,
                         dyn_y,
                         is_below,
+                        target_staff,
                     ));
                     let text = Text::new(dyn_str)
                         .set("x", local_x)
@@ -5412,7 +5528,7 @@ impl Renderer {
                 }
                 crate::models::DirectionType::Words(text_str) => {
                     let mut text_y = shared_y;
-                    if let Some((min_y, max_y)) = measure_extreme_occ {
+                    if let Some((min_y, max_y)) = measure_extreme_occ.filter(|_| !between) {
                         if is_below {
                             text_y = text_y.max(max_y + 15.0);
                         } else {
@@ -5429,6 +5545,19 @@ impl Renderer {
                         text_y,
                         is_below,
                     );
+                    if between {
+                        // Also clear the hairpins and other lines of this staff
+                        // in the gap (the part-wide occupancy isn't used here).
+                        text_y = self.clear_of_gap_items(
+                            target_staff,
+                            local_x,
+                            local_x + text_w,
+                            7.0,
+                            7.0,
+                            text_y,
+                            is_below,
+                        );
+                    }
                     self.placed_text_boxes.borrow_mut().push((
                         local_x,
                         local_x + text_w,
@@ -5436,6 +5565,14 @@ impl Renderer {
                         text_y + 7.0,
                         is_below,
                     ));
+                    self.push_gap_item(
+                        target_staff,
+                        is_below,
+                        local_x,
+                        local_x + text_w,
+                        text_y - 7.0,
+                        text_y + 7.0,
+                    );
                     let text = Text::new(text_str.as_str())
                         .set("x", local_x)
                         .set("y", text_y)
@@ -5579,24 +5716,55 @@ impl Renderer {
                     // Not pushed by this beat's own occupancy, which would put
                     // the hairpin under a dynamic at the same beat.
                     let wedge_staff = dir.staff.unwrap_or(if is_below { num_staves } else { 1 });
+                    // In the gap or outside the part: decided once for the
+                    // whole hairpin. A running one keeps its decision.
+                    let mut wedge_in_gap = match active_wedges.get(&num) {
+                        Some(w) if wedge.wedge_type == "stop" => w.in_gap,
+                        _ => {
+                            Self::between_staves(wedge_staff, is_below, num_staves)
+                                && !self.outer_wedges.borrow().get(&*self.current_part_id.borrow()).is_some_and(
+                                    |set| set.contains(&(self.current_measure_idx.get(), num)),
+                                )
+                        }
+                    };
                     let mut y_offset = self.dynamics_line_y(
                         is_below,
                         wedge_staff,
+                        num_staves,
+                        Some(wedge_in_gap),
                         part_start_y,
                         staff_dist,
                         measure_extreme_occ,
                         occupancy,
                     );
                     // A hairpin starting at a dynamic continues on that
-                    // dynamic's line.
+                    // dynamic's line. Between staves only its own staff's: the
+                    // other staff's line lies on the far side of that staff.
+                    // If that dynamic sits outside the part (on the line of a
+                    // hairpin it ends, say), this hairpin goes there too, for
+                    // its whole length.
+                    let wedge_between = wedge_in_gap;
                     if wedge.wedge_type == "crescendo" || wedge.wedge_type == "diminuendo" {
+                        let staff_top = |st: i32| part_start_y + (st as f32 - 1.0) * staff_dist;
                         for d in self.placed_dynamics.borrow().iter() {
-                            if d.3 == is_below && d.0 <= x + 2.0 && d.1 >= x - 2.0 {
+                            if d.3 == is_below
+                                && (!wedge_between || d.4 == wedge_staff)
+                                && d.0 <= x + 2.0
+                                && d.1 >= x - 2.0
+                            {
                                 y_offset = if is_below {
                                     y_offset.max(d.2)
                                 } else {
                                     y_offset.min(d.2)
                                 };
+                                let beyond_other_staff = if is_below {
+                                    d.2 > staff_top(wedge_staff + 1)
+                                } else {
+                                    d.2 < staff_top(wedge_staff - 1) + 4.0 * self.staff_line_distance
+                                };
+                                if wedge_in_gap && beyond_other_staff {
+                                    wedge_in_gap = false;
+                                }
                             }
                         }
                     }
@@ -5620,6 +5788,17 @@ impl Renderer {
                             })
                             .map(|d| d.1 + 4.0)
                             .fold(x, f32::max);
+                        // Provisional extent to the end of the measure (see the
+                        // per-measure registration of running hairpins).
+                        let half = start_spread.max(12.0) / 2.0;
+                        self.push_gap_item(
+                            wedge_staff,
+                            is_below,
+                            start_x,
+                            self.measure_span.get().1,
+                            y_offset - half,
+                            y_offset + half,
+                        );
                         active_wedges.insert(
                             num,
                             WedgeStartInfo {
@@ -5631,6 +5810,7 @@ impl Renderer {
                                 is_below,
                                 staff: wedge_staff,
                                 resumed_line: None,
+                                in_gap: wedge_in_gap,
                             },
                         );
                     } else if wedge.wedge_type == "stop" {
@@ -5666,6 +5846,8 @@ impl Renderer {
                                 &start_info.wedge_type,
                                 start_info.start_spread,
                                 end_spread,
+                                start_info.staff,
+                                start_info.is_below,
                             );
                         }
                     }
@@ -5682,24 +5864,37 @@ impl Renderer {
                     let staff_number = dir.staff.unwrap_or(1);
                     let staff_index = staff_number as f32 - 1.0;
 
-                    // Explicitly place below if staff >= 2 or placement is below.
-                    let is_below = dir.placement.as_deref() == Some("below") || staff_number >= 2;
+                    let is_below = Self::octave_shift_below(
+                        dir.placement.as_deref(),
+                        &shift.shift_type,
+                    );
+                    // Between two staves (below an upper staff or above a lower
+                    // one) the part-wide occupancy would include the other
+                    // staff's notes: start close to the staff and clear only its
+                    // own notes when the line is drawn.
+                    let between_staves = if is_below {
+                        staff_number < num_staves
+                    } else {
+                        staff_number > 1
+                    };
 
-                    let mut y_offset = if is_below {
+                    let mut y_offset = if between_staves {
+                        if is_below {
+                            part_start_y + staff_index * staff_dist + 6.5 * self.staff_line_distance
+                        } else {
+                            part_start_y + staff_index * staff_dist - 2.5 * self.staff_line_distance
+                        }
+                    } else if is_below {
                         part_start_y + staff_index * staff_dist + 6.0 * self.staff_line_distance
                     } else {
                         part_start_y + staff_index * staff_dist - 4.0 * self.staff_line_distance
                     };
 
                     // Use BOTH local and measure-wide occupancy for octave shifts
-                    if let Some((min_y, max_y)) = measure_extreme_occ {
-                        if is_below {
-                            y_offset = y_offset.max(max_y + 10.0);
-                        } else {
-                            y_offset = y_offset.min(min_y - 15.0);
-                        }
-                    }
-                    if let Some((min_y, max_y)) = local_occ {
+                    for occ in [measure_extreme_occ, local_occ] {
+                        let Some((min_y, max_y)) = occ.filter(|_| !between_staves) else {
+                            continue;
+                        };
                         if is_below {
                             y_offset = y_offset.max(max_y + 10.0);
                         } else {
@@ -5708,18 +5903,20 @@ impl Renderer {
                     }
 
                     if shift.shift_type == "up" || shift.shift_type == "down" {
-                        active_octave_shifts.insert(
-                            num,
-                            OctaveShiftStartInfo {
-                                x,
-                                y: y_offset,
-                                size: shift.size,
-                                is_continuation: false,
-                                shift_type: shift.shift_type.clone(),
-                                staff: dir.staff,
-                                is_below,
-                            },
-                        );
+                        let mut start_info = OctaveShiftStartInfo {
+                            x,
+                            y: y_offset,
+                            size: shift.size,
+                            is_continuation: false,
+                            shift_type: shift.shift_type.clone(),
+                            staff: dir.staff,
+                            is_below,
+                        };
+                        // Clear the notes drawn so far after the start now, so
+                        // directions placed after this one make room for it.
+                        start_info.y = self.octave_shift_clear_y(&start_info, f32::MAX);
+                        y_offset = start_info.y;
+                        active_octave_shifts.insert(num, start_info);
                     } else if shift.shift_type == "stop" {
                         if let Some(mut start_info) = active_octave_shifts.remove(&num) {
                             // Ensure the final drawing uses the most extreme y discovered in this measure
@@ -5728,6 +5925,7 @@ impl Renderer {
                             } else {
                                 start_info.y = start_info.y.min(y_offset);
                             }
+                            start_info.y = self.octave_shift_clear_y(&start_info, x);
                             doc = self.draw_octave_shift(
                                 doc,
                                 start_info.x,
@@ -5737,17 +5935,22 @@ impl Renderer {
                                 start_info.size,
                                 &start_info.shift_type,
                                 start_info.is_below,
+                                start_info.staff.unwrap_or(1),
                             );
                         }
                     }
 
-                    if is_below {
-                        local_occ =
-                            Some((local_occ.map(|o| o.0).unwrap_or(y_offset), y_offset + 10.0));
+                    // Widen (never shrink) the occupied band: a line placed
+                    // between the staves must not hide what is further out.
+                    let (lo, hi) = if is_below {
+                        (y_offset, y_offset + 10.0)
                     } else {
-                        local_occ =
-                            Some((y_offset - 15.0, local_occ.map(|o| o.1).unwrap_or(y_offset)));
-                    }
+                        (y_offset - 15.0, y_offset)
+                    };
+                    local_occ = Some(match local_occ {
+                        Some((a, b)) => (a.min(lo), b.max(hi)),
+                        None => (lo, hi),
+                    });
                 }
                 crate::models::DirectionType::Pedal(pedal) => {
                     let num = pedal.number.unwrap_or(1);
@@ -5979,10 +6182,13 @@ impl Renderer {
         _wedge_type: &str,
         start_spread: f32,
         end_spread: f32,
+        staff: i32,
+        is_below: bool,
     ) -> Document {
         let half_start = start_spread / 2.0;
         let half_end = end_spread / 2.0;
         let half = half_start.max(half_end);
+        self.push_gap_item(staff, is_below, x1, x2, y1.min(y2) - half, y1.max(y2) + half);
         self.placed_wedges.borrow_mut().push((
             x1.min(x2),
             x1.max(x2),
@@ -6004,6 +6210,39 @@ impl Renderer {
         doc.add(path)
     }
 
+    /// Octave-shift side: the given placement, else 8va/15ma above and
+    /// 8vb/15mb below (`type="up"` marks notes written higher than sounding,
+    /// i.e. an ottava bassa).
+    fn octave_shift_below(placement: Option<&str>, shift_type: &str) -> bool {
+        match placement {
+            Some("below") => true,
+            Some("above") => false,
+            _ => shift_type == "up",
+        }
+    }
+
+    /// Moves an octave-shift line running to `x2` outward until it clears
+    /// the noteheads and stems (beamed ones at their final tips) of its staff
+    /// drawn under it, with room for the "8va" text.
+    fn octave_shift_clear_y(&self, shift: &OctaveShiftStartInfo, x2: f32) -> f32 {
+        const GAP: f32 = 14.0;
+        let part_y = self.current_part_y.get();
+        let staff = shift.staff.unwrap_or(1);
+        let mut y = shift.y;
+        for pn in self.placed_notes.borrow().iter() {
+            if pn.part_y != part_y || pn.staff != staff || pn.x < shift.x - 6.0 || pn.x > x2 + 6.0
+            {
+                continue;
+            }
+            let (top, bottom) = match pn.stem {
+                Some((_, tip, _)) => (pn.top.min(tip), pn.bottom.max(tip)),
+                None => (pn.top, pn.bottom),
+            };
+            y = if shift.is_below { y.max(bottom + GAP) } else { y.min(top - GAP) };
+        }
+        y
+    }
+
     fn draw_octave_shift(
         &self,
         mut doc: Document,
@@ -6014,7 +6253,9 @@ impl Renderer {
         size: i32,
         shift_type: &str,
         is_below: bool,
+        staff: i32,
     ) -> Document {
+        self.push_gap_item(staff, is_below, x1, x2, y1.min(y2) - 8.0, y1.max(y2) + 8.0);
         let is_up = shift_type == "up";
         let text = match size {
             8 => {
@@ -6424,13 +6665,17 @@ impl Renderer {
         down: f32,
         mut y: f32,
         is_below: bool,
+        only_staff: Option<i32>,
     ) -> f32 {
         const GAP: f32 = 3.0;
         let part_y = self.current_part_y.get();
         let notes = self.placed_notes.borrow();
         for _ in 0..16 {
             let mut moved = false;
-            for pn in notes.iter().filter(|pn| pn.part_y == part_y) {
+            for pn in notes
+                .iter()
+                .filter(|pn| pn.part_y == part_y && only_staff.is_none_or(|st| pn.staff == st))
+            {
                 // Notehead box, then the stem as a thin box.
                 let mut parts = vec![(pn.x - 6.0, pn.x + 6.0, pn.top, pn.bottom)];
                 if let Some((sx, tip, _)) = pn.stem {
@@ -6441,6 +6686,39 @@ impl Renderer {
                         y = if is_below { bottom + GAP + up } else { top - GAP - down };
                         moved = true;
                     }
+                }
+            }
+            if !moved {
+                break;
+            }
+        }
+        y
+    }
+
+    /// Moves an element of `staff` spanning `x1..x2` (reaching `up` above
+    /// and `down` below its y) outward until it clears that staff's
+    /// directions already placed on the same side.
+    fn clear_of_gap_items(
+        &self,
+        staff: i32,
+        x1: f32,
+        x2: f32,
+        up: f32,
+        down: f32,
+        mut y: f32,
+        is_below: bool,
+    ) -> f32 {
+        const GAP: f32 = 3.0;
+        let part_y = self.current_part_y.get();
+        let items = self.gap_items.borrow();
+        for _ in 0..16 {
+            let mut moved = false;
+            for it in items.iter().filter(|it| {
+                it.part_y == part_y && it.staff == staff && it.is_below == is_below
+            }) {
+                if x1 < it.x2 && x2 > it.x1 && y - up < it.bottom + GAP && y + down > it.top - GAP {
+                    y = if is_below { it.bottom + GAP + up } else { it.top - GAP - down };
+                    moved = true;
                 }
             }
             if !moved {
@@ -7057,6 +7335,7 @@ impl Renderer {
     ) -> Vec<(String, f32)> {
         const SLUR_GAP: f32 = 6.0;
         let slurs = self.placed_slurs.borrow();
+        let slurs: Vec<&PlacedSlur> = slurs.iter().filter(|s| !s.cross_staff).collect();
         let mut result = Vec::new();
         for part in &score.parts {
             let id = &part.id;
@@ -7075,16 +7354,21 @@ impl Renderer {
                 let upper_bottom =
                     part_start_y + (s as f32 - 1.0) * staff_dist + 4.0 * self.staff_line_distance;
                 let lower_top = part_start_y + s as f32 * staff_dist;
-                let mid = (upper_bottom + lower_top) / 2.0;
+                let upper_top = part_start_y + (s as f32 - 1.0) * staff_dist;
+                let lower_bottom = lower_top + 4.0 * self.staff_line_distance;
+                let owned = |sl: &PlacedSlur, staff: i32| {
+                    sl.staff == staff && (sl.part_y - part_start_y).abs() < 0.5
+                };
                 for a in slurs.iter() {
-                    // Hangs below the upper staff: both ends above the gap's
-                    // middle, curve reaching below the staff.
-                    if !(a.y1.max(a.y2) < mid && a.bottom > upper_bottom) {
+                    // Hangs below the upper staff. It must stay out of the
+                    // lower staff itself, not only clear that staff's slurs.
+                    if !(owned(a, s) && a.bottom > upper_bottom) {
                         continue;
                     }
+                    extra = extra.max(a.bottom + SLUR_GAP - lower_top);
                     for b in slurs.iter() {
                         // Rises above the lower staff.
-                        if !(b.y1.min(b.y2) > mid && b.top < lower_top) {
+                        if !(owned(b, s + 1) && b.top < lower_top) {
                             continue;
                         }
                         // Cheap reject on bounding boxes, then compare the
@@ -7102,10 +7386,80 @@ impl Renderer {
                         }
                     }
                 }
+                for b in slurs.iter().filter(|b| owned(b, s + 1) && b.top < lower_top) {
+                    extra = extra.max(upper_bottom + SLUR_GAP - b.top);
+                }
+                // Directions placed in the gap (hairpins, dynamics, words,
+                // octave lines) must clear the other staff, its notes and its
+                // own directions in the gap.
+                {
+                    const DIR_GAP: f32 = 8.0;
+                    let items = self.gap_items.borrow();
+                    let in_part = |it: &&GapItem| (it.part_y - part_start_y).abs() < 0.5;
+                    // Not those sent beyond the other staff (outside the part,
+                    // beside a cross-staff beam).
+                    let uppers: Vec<&GapItem> = items
+                        .iter()
+                        .filter(in_part)
+                        .filter(|it| it.staff == s && it.is_below && it.top < lower_bottom)
+                        .collect();
+                    let lowers: Vec<&GapItem> = items
+                        .iter()
+                        .filter(in_part)
+                        .filter(|it| it.staff == s + 1 && !it.is_below && it.bottom > upper_top)
+                        .collect();
+                    let notes = self.placed_notes.borrow();
+                    let staff_notes = |staff: i32, x1: f32, x2: f32| {
+                        notes
+                            .iter()
+                            .filter(move |pn| {
+                                (pn.part_y - part_start_y).abs() < 0.5
+                                    && pn.staff == staff
+                                    && pn.x > x1 - 6.0
+                                    && pn.x < x2 + 6.0
+                            })
+                            .map(|pn| self.note_extent_own_staff(pn))
+                    };
+                    // Lowest (highest) point of a slur over an item's span.
+                    let slur_y_over = |sl: &PlacedSlur, x1: f32, x2: f32, lowest: bool| {
+                        let (a, b) = sl.x_range();
+                        let (lo, hi) = (x1.max(a), x2.min(b));
+                        (lo < hi).then(|| {
+                            (0..=8)
+                                .map(|i| sl.y_at(lo + (hi - lo) * i as f32 / 8.0))
+                                .fold(if lowest { f32::MIN } else { f32::MAX }, |acc, y| {
+                                    if lowest { acc.max(y) } else { acc.min(y) }
+                                })
+                        })
+                    };
+                    for u in &uppers {
+                        extra = extra.max(u.bottom + DIR_GAP - lower_top);
+                        for b in slurs.iter().filter(|b| owned(b, s + 1)) {
+                            if let Some(y) = slur_y_over(b, u.x1, u.x2, false) {
+                                extra = extra.max(u.bottom + DIR_GAP - y);
+                            }
+                        }
+                        for (top, _) in staff_notes(s + 1, u.x1, u.x2) {
+                            extra = extra.max(u.bottom + DIR_GAP - top);
+                        }
+                        for l in lowers.iter().filter(|l| l.x1 < u.x2 && l.x2 > u.x1) {
+                            extra = extra.max(u.bottom + DIR_GAP - l.top);
+                        }
+                    }
+                    for l in &lowers {
+                        extra = extra.max(upper_bottom + DIR_GAP - l.top);
+                        for a in slurs.iter().filter(|a| owned(a, s)) {
+                            if let Some(y) = slur_y_over(a, l.x1, l.x2, true) {
+                                extra = extra.max(y + DIR_GAP - l.top);
+                            }
+                        }
+                        for (_, bottom) in staff_notes(s, l.x1, l.x2) {
+                            extra = extra.max(bottom + DIR_GAP - l.top);
+                        }
+                    }
+                }
                 // A slur reaching into the gap must also clear the other
                 // staff's noteheads and stems hanging into it.
-                let upper_top = part_start_y + (s as f32 - 1.0) * staff_dist;
-                let lower_bottom = lower_top + 4.0 * self.staff_line_distance;
                 for pn in self.placed_notes.borrow().iter().filter(|pn| pn.part_y == part_start_y) {
                     let stem_tip = |up: bool| match pn.stem {
                         Some((sx, tip, is_up)) if is_up == up => Some((sx, tip)),
@@ -7120,7 +7474,10 @@ impl Renderer {
                             // An over-slur starting and ending below the upper
                             // staff (its ends may sit on ledger lines in the gap).
                             let ends_top = b.y1.min(b.y2);
-                            if !(ends_top > upper_bottom + 5.0 && b.top < ends_top - 1.0) {
+                            if !(ends_top > upper_bottom + 5.0
+                                && b.top < ends_top - 1.0
+                                && b.top > upper_top)
+                            {
                                 continue;
                             }
                             let (b1, b2) = b.x_range();
@@ -7141,8 +7498,13 @@ impl Renderer {
                         for a in slurs.iter() {
                             // An under-slur starting and ending above the lower
                             // staff.
+                            // One sagging past the lower staff is not in the gap:
+                            // widening it would only stretch the curve further.
                             let ends_bottom = a.y1.max(a.y2);
-                            if !(ends_bottom < lower_top - 5.0 && a.bottom > ends_bottom + 1.0) {
+                            if !(ends_bottom < lower_top - 5.0
+                                && a.bottom > ends_bottom + 1.0
+                                && a.bottom < lower_bottom)
+                            {
                                 continue;
                             }
                             let (a1, a2) = a.x_range();
@@ -7200,12 +7562,167 @@ impl Renderer {
         y
     }
 
+    /// Hairpins of `part`, as (start measure index, number), that cross a
+    /// measure holding a beam joining notes on two staves (see
+    /// `Renderer::outer_wedges`).
+    fn outer_wedges(part: &crate::models::Part) -> HashSet<(usize, i32)> {
+        use crate::models::BeamValue;
+        // Measures holding (part of) a cross-staff beam group.
+        let mut cross: HashSet<usize> = HashSet::new();
+        // voice -> (measure the group began in, staves of its notes)
+        let mut groups: HashMap<i32, (usize, HashSet<i32>)> = HashMap::new();
+        for (mi, m) in part.measures.iter().enumerate() {
+            for el in &m.elements {
+                let MeasureElement::Note(n) = el else { continue };
+                let voice = n.voice.unwrap_or(1);
+                let staff = n.staff.unwrap_or(1);
+                if n.is_chord {
+                    if let Some(g) = groups.get_mut(&voice) {
+                        g.1.insert(staff);
+                    }
+                    continue;
+                }
+                match n.beams.iter().find(|b| b.number == 1).map(|b| &b.value) {
+                    Some(BeamValue::Begin) => {
+                        groups.insert(voice, (mi, HashSet::from([staff])));
+                    }
+                    Some(BeamValue::Continue) => {
+                        groups.entry(voice).or_insert_with(|| (mi, HashSet::new())).1.insert(staff);
+                    }
+                    Some(BeamValue::End) => {
+                        if let Some((start, mut staves)) = groups.remove(&voice) {
+                            staves.insert(staff);
+                            if staves.len() > 1 {
+                                cross.extend(start..=mi);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut out = HashSet::new();
+        let mut open: HashMap<i32, usize> = HashMap::new();
+        let close = |start: usize, end: usize, num: i32, out: &mut HashSet<(usize, i32)>| {
+            if (start..=end).any(|k| cross.contains(&k)) {
+                out.insert((start, num));
+            }
+        };
+        for (mi, m) in part.measures.iter().enumerate() {
+            for el in &m.elements {
+                let MeasureElement::Direction(d) = el else { continue };
+                for t in &d.types {
+                    let crate::models::DirectionType::Wedge(w) = t else { continue };
+                    let num = w.number.unwrap_or(1);
+                    match w.wedge_type.as_str() {
+                        "crescendo" | "diminuendo" => {
+                            // A start reusing an open number replaces that
+                            // hairpin, which runs up to here (as when drawn).
+                            if let Some(start) = open.insert(num, mi) {
+                                close(start, mi, num, &mut out);
+                            }
+                        }
+                        "stop" => {
+                            if let Some(start) = open.remove(&num) {
+                                close(start, mi, num, &mut out);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let last = part.measures.len().saturating_sub(1);
+        for (num, start) in open {
+            close(start, last, num, &mut out);
+        }
+        out
+    }
+
+    /// Whether a direction on `staff` placed on that side sits between two
+    /// staves of the part.
+    fn between_staves(staff: i32, is_below: bool, num_staves: i32) -> bool {
+        if is_below { staff < num_staves } else { staff > 1 }
+    }
+
+    /// Whether a direction on `staff` on that side goes in the gap to the
+    /// next staff: it does unless a beam in the current measure joins the two
+    /// staves (it fills the gap), in which case it goes outside the part as
+    /// before.
+    fn in_staff_gap(&self, staff: i32, is_below: bool, num_staves: i32) -> bool {
+        if !Self::between_staves(staff, is_below, num_staves) {
+            return false;
+        }
+        let other = if is_below { staff + 1 } else { staff - 1 };
+        let (x1, x2) = self.measure_span.get();
+        let part_y = self.current_part_y.get();
+        !self.placed_notes.borrow().iter().any(|pn| {
+            pn.part_y == part_y
+                && (pn.staff == staff || pn.staff == other)
+                && pn.x >= x1
+                && pn.x <= x2
+                && pn.cross_beam
+        })
+    }
+
+    /// Vertical extent of `staff`'s notes (noteheads and stems at their final
+    /// tips) and slurs (not cross-staff ones) drawn in the current measure.
+    fn staff_extent_in_measure(&self, staff: i32) -> Option<(f32, f32)> {
+        let (x1, x2) = self.measure_span.get();
+        let part_y = self.current_part_y.get();
+        let notes = self.placed_notes.borrow();
+        let note_ext = notes
+            .iter()
+            .filter(|pn| pn.part_y == part_y && pn.staff == staff && pn.x >= x1 && pn.x <= x2)
+            .map(|pn| self.note_extent_own_staff(pn));
+        let slurs = self.placed_slurs.borrow();
+        let slur_ext = slurs
+            .iter()
+            .filter(|sl| {
+                sl.staff == staff && !sl.cross_staff && (sl.part_y - part_y).abs() < 0.5
+            })
+            .filter_map(|sl| {
+                let (a, b) = sl.x_range();
+                let (lo, hi) = (x1.max(a), x2.min(b));
+                (lo < hi).then(|| {
+                    (0..=8)
+                        .map(|i| sl.y_at(lo + (hi - lo) * i as f32 / 8.0))
+                        .fold((f32::MAX, f32::MIN), |(t, b), y| (t.min(y), b.max(y)))
+                })
+            });
+        note_ext.chain(slur_ext).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+    }
+
+    /// A placed note's extent with its stem, unless the stem joins a
+    /// cross-staff beam: such a stem's length follows the staff gap, so it
+    /// can't bound what is placed in that gap.
+    fn note_extent_own_staff(&self, pn: &PlacedNote) -> (f32, f32) {
+        match pn.stem {
+            Some((_, tip, _)) if !pn.cross_beam => (pn.top.min(tip), pn.bottom.max(tip)),
+            _ => (pn.top, pn.bottom),
+        }
+    }
+
+    fn push_gap_item(&self, staff: i32, is_below: bool, x1: f32, x2: f32, top: f32, bottom: f32) {
+        self.gap_items.borrow_mut().push(GapItem {
+            part_y: self.current_part_y.get(),
+            staff,
+            is_below,
+            x1: x1.min(x2),
+            x2: x1.max(x2),
+            top,
+            bottom,
+        });
+    }
+
     /// Shared baseline for dynamics and hairpins of a staff in a measure:
     /// a fixed distance from the staff, pushed clear of the measure's notes.
     fn dynamics_line_y(
         &self,
         is_below: bool,
         staff: i32,
+        num_staves: i32,
+        in_gap: Option<bool>,
         part_start_y: f32,
         staff_dist: f32,
         measure_extreme_occ: Option<(f32, f32)>,
@@ -7217,6 +7734,19 @@ impl Renderer {
         } else {
             staff_y - 2.0 * self.staff_line_distance
         };
+        // Between two staves only this staff's own notes count (the part-wide
+        // occupancy would push it into the other staff); the staff gap is
+        // widened afterwards if it then meets the other staff.
+        // A hairpin passes its own decision (made for its whole length);
+        // anything else decides for the current measure.
+        let in_gap = in_gap.unwrap_or_else(|| self.in_staff_gap(staff, is_below, num_staves));
+        if in_gap {
+            return match self.staff_extent_in_measure(staff) {
+                Some((_, bottom)) if is_below => base.max(bottom + 15.0),
+                Some((top, _)) if !is_below => base.min(top - 15.0),
+                _ => base,
+            };
+        }
         match measure_extreme_occ.or(beat_occ) {
             Some((_, max_y)) if is_below => base.max(max_y + 15.0),
             Some((min_y, _)) => base.min(min_y - 15.0),
@@ -7537,17 +8067,45 @@ impl Renderer {
         let note_right_edge = note_x + self.note_head_width * 0.5 + 4.0;
         // An invisible note (print-object="no") has no drawn position (its y is
         // a meaningless 0): keep beam groups going and close spanners that end
-        // on it, but attach nothing to it and report no vertical extent, so it
-        // can't drag directions placed around the measure off the page.
+        // on it, and report no vertical extent, so it can't drag directions
+        // placed around the measure off the page. Slurs still attach where its
+        // notehead would be, as MuseScore draws them: exporters hide a voice's
+        // note under another voice's identical notehead and keep the slur on
+        // the hidden one.
         if effective_chord_group.iter().all(|n| n.print_object == Some(false)) {
             doc = self.process_beams(doc, &effective_chord_group, stem, active_beams);
             let beam_tips: Vec<BeamedStemTip> =
                 self.beamed_stem_tips.borrow_mut().drain(..).collect();
             Self::reanchor_slurs_to_beams(active_slurs, &beam_tips);
+            let hidden_ys: Vec<f32> = effective_chord_group
+                .iter()
+                .filter_map(|n| n.pitch.as_ref())
+                .map(|p| self.pitch_to_y(p, clef, staff_y_offset))
+                .collect();
+            if !hidden_ys.is_empty() && clef.sign != "TAB" {
+                let voice_sharing =
+                    Self::voice_sharing(chord_group[0], time_pos, divisions, voice_info);
+                let (new_doc, _, _) = self.process_slurs(
+                    doc,
+                    &effective_chord_group,
+                    note_x,
+                    note_y,
+                    None,
+                    active_slurs,
+                    false,
+                    &hidden_ys,
+                    &vec![note_x; effective_chord_group.len()],
+                    &[],
+                    voice_sharing,
+                );
+                doc = new_doc;
+            }
             for n in &effective_chord_group {
                 for notation in &n.notations {
                     match notation {
-                        Notation::Slur { number, note_type, .. } if note_type == "stop" => {
+                        Notation::Slur { number, note_type, .. }
+                            if note_type == "stop" && hidden_ys.is_empty() =>
+                        {
                             active_slurs.remove(number);
                         }
                         Notation::Tied { note_type } if note_type == "stop" => {
@@ -7593,8 +8151,7 @@ impl Renderer {
             max_y = max_y.max(new_max);
         }
 
-        let shares_staff_with_other_voice =
-            Self::rest_voice_shift(chord_group[0], time_pos, divisions, voice_info) != 0.0;
+        let voice_sharing = Self::voice_sharing(chord_group[0], time_pos, divisions, voice_info);
         let (new_doc, new_min, new_max) = self.process_slurs(
             doc,
             &effective_chord_group,
@@ -7606,7 +8163,7 @@ impl Renderer {
             &pitches_y,
             &note_xs,
             &beam_tips,
-            shares_staff_with_other_voice,
+            voice_sharing,
         );
         doc = new_doc;
         if new_min != f32::MAX {
@@ -10861,7 +11418,7 @@ impl Renderer {
         pitches_y: &[f32],
         note_xs: &[f32],
         beam_tips: &[BeamedStemTip],
-        shares_staff_with_other_voice: bool,
+        voice_sharing: VoiceSharing,
     ) -> (Document, f32, f32) {
         let mut min_y = f32::MAX;
         let mut max_y = f32::MIN;
@@ -10895,6 +11452,7 @@ impl Renderer {
                     top: min_pitch_y - 5.0,
                     bottom: max_pitch_y + 5.0,
                     stem: stem.map(|s| (s.x, s.y_tip, s.is_up)),
+                    cross_beam: false,
                 });
             }
 
@@ -10967,13 +11525,14 @@ impl Renderer {
                             let is_above = match placement.as_deref() {
                                 Some("above") => true,
                                 Some("below") => false,
-                                // With another voice sharing the staff, the slur goes on
-                                // the stem side (away from the other voice); otherwise
-                                // on the notehead side.
-                                _ => match &stem {
-                                    Some(s) if shares_staff_with_other_voice => s.is_up,
-                                    Some(s) => !s.is_up,
-                                    None => true,
+                                // With another voice sharing the staff, the slur goes
+                                // away from it (see `VoiceSharing`); otherwise on the
+                                // notehead side.
+                                _ => match (&stem, voice_sharing) {
+                                    (Some(s), VoiceSharing::Now) => s.is_up,
+                                    (_, VoiceSharing::Later { upper }) => upper,
+                                    (Some(s), VoiceSharing::Alone) => !s.is_up,
+                                    (None, _) => true,
                                 },
                             };
                             // Attach to the note's outermost element on the slur's side:
@@ -11174,6 +11733,7 @@ impl Renderer {
                     {
                         *sx = b.x;
                         *tip = if b.is_up { b.tip_y } else { b.tip_y + b.beam_thickness };
+                        pn.cross_beam = b.cross_staff;
                     }
                 }
             }
@@ -11275,11 +11835,24 @@ impl Renderer {
             let (end_x, end_y, end_staff, end_top, end_bottom) = slur.known_end.unwrap();
             let mut obstacles = slur.obstacles.clone();
             if end_staff != slur.staff {
+                // A cross-staff slur heads into the gap toward the end staff:
+                // start-staff notes on the far side of its start point (e.g.
+                // another voice's stems hanging away from that staff) are not
+                // under its path, and would drag the curve right past them.
+                let toward_up = end_staff < slur.staff;
+                obstacles.retain(|o| if toward_up { o.1 <= slur.y } else { o.1 >= slur.y });
                 obstacles.extend(self.cross_staff_slur_obstacles(
                     end_staff, slur.x, end_x, end_top, end_bottom, slur.is_above,
                 ));
             }
-            doc = self.draw_slur(doc, slur.x, slur.y, end_x, end_y, slur.is_above, &obstacles);
+            doc = self.draw_slur(
+                doc, slur.x, slur.y, end_x, end_y, slur.is_above, &obstacles, slur.staff,
+            );
+            if end_staff != slur.staff {
+                if let Some(placed) = self.placed_slurs.borrow_mut().last_mut() {
+                    placed.cross_staff = true;
+                }
+            }
         }
         doc
     }
@@ -11288,7 +11861,10 @@ impl Renderer {
     /// `staff` strictly between `x1` and `x2`, for a slur that ends on that
     /// staff. Notes are limited to the end note's neighbourhood (`near_top`
     /// .. `near_bottom` ± 120px) so the same staff number of another part is
-    /// never picked up.
+    /// never picked up. Notes in line with either end (sounding with the
+    /// start note on the other staff, or chord-mates of the end note) are not
+    /// under the slur, and clearing one right beside an end would bend the
+    /// curve far out.
     fn cross_staff_slur_obstacles(
         &self,
         staff: i32,
@@ -11300,11 +11876,12 @@ impl Renderer {
     ) -> Vec<(f32, f32)> {
         let mut out = Vec::new();
         let part_y = self.current_part_y.get();
+        let in_line = self.note_head_width + 2.0;
         for pn in self.placed_notes.borrow().iter() {
             if pn.part_y != part_y
                 || pn.staff != staff
-                || pn.x <= x1
-                || pn.x >= x2
+                || pn.x <= x1 + in_line
+                || pn.x >= x2 - in_line
                 || pn.bottom < near_top - 120.0
                 || pn.top > near_bottom + 120.0
             {
@@ -11477,6 +12054,7 @@ impl Renderer {
         y2: f32,
         is_above: bool,
         obstacles: &[(f32, f32)],
+        staff: i32,
     ) -> Document {
         // Never draw (or grow the system for) a slur with a bogus endpoint.
         if ![x1, y1, x2, y2].iter().all(|v| v.is_finite() && v.abs() < 1e6) {
@@ -11597,6 +12175,9 @@ impl Renderer {
             y2,
             top: top - half_stroke,
             bottom: bottom + half_stroke,
+            cross_staff: false,
+            staff,
+            part_y: self.current_part_y.get(),
         });
 
         let path = Path::new()
@@ -11984,6 +12565,7 @@ impl Renderer {
                 is_up: s_item.is_up,
                 beam_thickness: primary_beam_thickness,
                 staff: s_item.staff,
+                cross_staff: is_cross_staff,
             });
             let stroke_w = if is_cue { 0.8 } else { 1.2 };
             doc = doc.add(
@@ -13008,7 +13590,8 @@ impl Renderer {
                             t + to_units(n.duration, divisions),
                         ));
                     }
-                    if !n.rest && n.grace.is_none() {
+                    // A hidden note draws no notehead, so it can't collide.
+                    if !n.rest && n.grace.is_none() && n.print_object != Some(false) {
                         let step = n
                             .pitch
                             .as_ref()
@@ -13098,6 +13681,31 @@ impl Renderer {
     /// as MuseScore number the second staff's voices 5-8, and a voice may only
     /// cover part of the measure). When voices do overlap, the lowest-numbered
     /// (upper) voice's rest moves up and the others' move down.
+    /// How this note's voice shares its staff with other voices, for placing
+    /// a slur that starts on it.
+    fn voice_sharing(
+        note: &Note,
+        time_pos: i32,
+        divisions: i32,
+        voice_info: &MeasureVoiceInfo,
+    ) -> VoiceSharing {
+        if Self::rest_voice_shift(note, time_pos, divisions, voice_info) != 0.0 {
+            return VoiceSharing::Now;
+        }
+        let voice = note.voice.unwrap_or(1);
+        let lowest_later = voice_info.voice_spans.get(&note.staff.unwrap_or(1)).and_then(|spans| {
+            spans
+                .iter()
+                .filter(|&&(v, _, e)| v != voice && e > time_pos)
+                .map(|&(v, _, _)| v)
+                .min()
+        });
+        match lowest_later {
+            None => VoiceSharing::Alone,
+            Some(lowest_other) => VoiceSharing::Later { upper: voice < lowest_other },
+        }
+    }
+
     fn rest_voice_shift(
         note: &Note,
         time_pos: i32,

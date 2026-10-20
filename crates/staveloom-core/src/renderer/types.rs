@@ -70,6 +70,19 @@ pub(crate) const PENDING_SLUR_STOP_KEY: i32 = 1 << 20;
 /// `SlurStartInfo::known_end`).
 pub(crate) const KNOWN_SLUR_END_KEY: i32 = 1 << 21;
 
+/// How a note's voice shares its staff, for placing a slur that starts on it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum VoiceSharing {
+    /// No other voice from here to the end of the measure: notehead side.
+    Alone,
+    /// Another voice sounds with this note: stem side, away from it.
+    Now,
+    /// Another voice only enters later in the measure (the slur's start note
+    /// doesn't show which side it is on): the lowest-numbered voice goes
+    /// above, the others below, as MuseScore places them.
+    Later { upper: bool },
+}
+
 /// Final geometry of one beamed stem, reported by `draw_beam_group` so slurs
 /// attached to that stem can be moved to clear the beam.
 #[derive(Clone, Copy)]
@@ -85,6 +98,8 @@ pub(crate) struct BeamedStemTip {
     pub beam_thickness: f32,
     /// Staff of the stem's note.
     pub staff: i32,
+    /// The beam joins notes on two staves.
+    pub cross_staff: bool,
 }
 
 #[derive(Clone)]
