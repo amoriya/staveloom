@@ -128,6 +128,10 @@ pub struct Renderer {
     /// fills that gap: they go outside the part on every system instead.
     outer_wedges: std::cell::RefCell<HashMap<String, HashSet<(usize, i32)>>>,
     current_part_id: std::cell::RefCell<String>,
+    /// Notes (by address) starting a trill wavy line that never gets a stop
+    /// (before the next start of its number or the end of the part): the
+    /// line ends with the note itself.
+    open_wavy_notes: std::cell::RefCell<HashSet<usize>>,
     /// Slur curves drawn in the current system as (x1, x2, top y, bottom y,
     /// higher endpoint y, lower endpoint y), so dynamics and hairpins can be
     /// kept clear of them and colliding slurs between staves detected.
@@ -277,6 +281,7 @@ impl Default for Renderer {
             current_measure_idx: std::cell::Cell::new(0),
             outer_wedges: std::cell::RefCell::new(HashMap::new()),
             current_part_id: std::cell::RefCell::new(String::new()),
+            open_wavy_notes: std::cell::RefCell::new(HashSet::new()),
             placed_slurs: std::cell::RefCell::new(Vec::new()),
             placed_notes: std::cell::RefCell::new(Vec::new()),
             pending_tuplets: std::cell::RefCell::new(Vec::new()),
@@ -828,6 +833,8 @@ impl Renderer {
         let mut measure_to_sys: HashMap<usize, usize> = HashMap::new();
 
         // Persistent state across systems
+        *self.open_wavy_notes.borrow_mut() =
+            score.parts.iter().flat_map(Self::open_wavy_notes).collect();
         *self.outer_wedges.borrow_mut() = score
             .parts
             .iter()
@@ -7562,6 +7569,39 @@ impl Renderer {
         y
     }
 
+    /// Addresses of `part`'s notes starting a wavy line with no matching stop
+    /// (see `Renderer::open_wavy_notes`).
+    fn open_wavy_notes(part: &crate::models::Part) -> Vec<usize> {
+        let mut open = Vec::new();
+        let mut pending: HashMap<i32, usize> = HashMap::new();
+        for m in &part.measures {
+            for el in &m.elements {
+                let MeasureElement::Note(n) = el else { continue };
+                for notation in &n.notations {
+                    let Notation::Ornaments(orns) = notation else { continue };
+                    for o in orns {
+                        let crate::models::Ornament::WavyLine { wavy_type, number, .. } = o else {
+                            continue;
+                        };
+                        match wavy_type.as_str() {
+                            "start" => {
+                                if let Some(prev) = pending.insert(*number, n as *const Note as usize) {
+                                    open.push(prev);
+                                }
+                            }
+                            "stop" => {
+                                pending.remove(number);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        open.extend(pending.into_values());
+        open
+    }
+
     /// Hairpins of `part`, as (start measure index, number), that cross a
     /// measure holding a beam joining notes on two staves (see
     /// `Renderer::outer_wedges`).
@@ -8246,6 +8286,32 @@ impl Renderer {
         doc = new_doc;
         min_y = new_min;
         max_y = new_max;
+        // A wavy line that is never stopped ends where its note does: at the
+        // next onset, or just before the barline.
+        for note in chord_group {
+            if !self.open_wavy_notes.borrow().contains(&(*note as *const Note as usize)) {
+                continue;
+            }
+            for notation in &note.notations {
+                let Notation::Ornaments(orns) = notation else { continue };
+                for o in orns {
+                    let crate::models::Ornament::WavyLine { wavy_type, number, .. } = o else {
+                        continue;
+                    };
+                    if wavy_type != "start" {
+                        continue;
+                    }
+                    if let Some(info) = active_wavy_lines.remove(number) {
+                        let end_time = time_pos + duration_units.round() as i32;
+                        let end_x = match time_map.get(&end_time) {
+                            Some(r) => start_x + r * width - self.note_head_width,
+                            None => start_x + width - current_time_x_offset - 4.0,
+                        };
+                        doc = self.draw_wavy_line(doc, info.x, info.y, end_x.max(info.x + 10.0), info.y);
+                    }
+                }
+            }
+        }
         let (new_doc, new_min, new_max) = self.process_technical(
             doc,
             &effective_chord_group,
