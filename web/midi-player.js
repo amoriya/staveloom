@@ -427,8 +427,11 @@ class MidiPlayerController {
         if (this._ctx && this._ctx.state !== 'running') {
             try { await this._ctx.resume(); } catch (_) {}
         }
+        // Song position playback starts from (where a seek left it while
+        // paused), so the re-anchor below keeps it instead of jumping to 0.
+        const startPos = this._seq.pausedTime ?? this._seq.currentTime ?? 0;
         this._seq.play();
-        this._resyncClockSoon();
+        this._resyncClockSoon(startPos);
     }
 
     // The Sequencer's play() anchors its visualization clock
@@ -439,10 +442,13 @@ class MidiPlayerController {
     // until the library's own slow (~1%/frame) self-correction catches up.
     // Re-anchor directly a couple of frames later, once the audio thread has
     // had a chance to report a fresh currentTime. This mirrors the library's
-    // own recalculateStartTime(0) but writes the (plain, non-private) fields
-    // directly instead of going through the public currentTime setter, which
-    // performs a real seek (clears in-flight notes) — not what we want here.
-    _resyncClockSoon() {
+    // own recalculateStartTime(startPos) but writes the (plain, non-private)
+    // fields directly instead of going through the public currentTime setter,
+    // which performs a real seek (clears in-flight notes) — not what we want
+    // here. startPos must be the position playback started from: anchoring at
+    // 0 would show the cursor at the start of the piece until the library's
+    // slow drift correction walks it back.
+    _resyncClockSoon(startPos = 0) {
         const seq = this._seq;
         requestAnimationFrame(() => requestAnimationFrame(() => {
             if (!seq || seq !== this._seq) return;
@@ -450,7 +456,7 @@ class MidiPlayerController {
             const synthTime = seq.synth.currentTime;
             if (typeof synthTime !== 'number') return;
             const rate = seq._playbackRate ?? 1;
-            seq.absoluteStartTime = synthTime;
+            seq.absoluteStartTime = synthTime - startPos / rate;
             seq.highResTimeOffset = (synthTime - performance.now() / 1000) * rate;
         }));
     }

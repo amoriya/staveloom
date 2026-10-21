@@ -33,6 +33,10 @@
     currentZoom: 100,
     isPlaying: false,
     isScrubbing: false,
+    // Seek just requested from the timeline: { time, until }. The player only
+    // reports the new position once its audio thread has handled the seek, so
+    // until then (or the deadline) the cursor is drawn at the target time.
+    pendingSeek: null,
     rawFileBytes: null,
     midiBytes: null,
     svgContent: null, // combined SVG string for download
@@ -232,15 +236,19 @@
       const pct = parseFloat(e.target.value);
       timelineProgressBar.style.width = `${pct}%`;
       const dur = midiPlayer.duration;
-      if (dur) currentTimeEl.innerText = formatTime((pct / 100) * dur);
+      if (dur) {
+        const t = (pct / 100) * dur;
+        currentTimeEl.innerText = formatTime(t);
+        // Follow the thumb with the cursor while dragging.
+        updateCursorPosition(t);
+      }
     });
 
     timelineScrubber.addEventListener("change", (e) => {
       const pct = parseFloat(e.target.value);
       const dur = midiPlayer.duration;
-      if (dur) midiPlayer.currentTime = (pct / 100) * dur;
+      if (dur) seekTo((pct / 100) * dur);
       state.isScrubbing = false;
-      updateCursorPosition();
     });
 
     muteBtn.addEventListener("click", toggleMute);
@@ -266,19 +274,10 @@
         togglePlay();
       } else if (e.code === "ArrowLeft") {
         e.preventDefault();
-        const t = Math.max(0, midiPlayer.currentTime - 5);
-        midiPlayer.currentTime = t;
-        updateTimelineScrubber();
-        updateCursorPosition();
+        seekTo(Math.max(0, currentPosition() - 5));
       } else if (e.code === "ArrowRight") {
         e.preventDefault();
-        const t = Math.min(
-          midiPlayer.duration || 0,
-          midiPlayer.currentTime + 5,
-        );
-        midiPlayer.currentTime = t;
-        updateTimelineScrubber();
-        updateCursorPosition();
+        seekTo(Math.min(midiPlayer.duration || 0, currentPosition() + 5));
       }
     });
   }
@@ -310,11 +309,7 @@
       playIcon.classList.remove("hidden");
       state.isPlaying = false;
       cancelAnimationFrame(animFrameId);
-      midiPlayer.currentTime = 0;
-      timelineScrubber.value = 0;
-      timelineProgressBar.style.width = "0%";
-      currentTimeEl.innerText = "0:00";
-      updateCursorPosition();
+      seekTo(0);
     };
   }
 
@@ -588,18 +583,23 @@
   function startPlaybackLoop() {
     function loop() {
       if (!state.isScrubbing) {
-        updateTimelineScrubber();
-        updateCursorPosition();
+        const seekTime = pendingSeekTime();
+        if (seekTime === null) {
+          updateTimelineScrubber();
+          updateCursorPosition();
+        } else {
+          updateCursorPosition(seekTime);
+        }
       }
       animFrameId = requestAnimationFrame(loop);
     }
     animFrameId = requestAnimationFrame(loop);
   }
 
-  function updateTimelineScrubber() {
+  function updateTimelineScrubber(time) {
     const dur = midiPlayer.duration;
     if (!dur) return;
-    const t = midiPlayer.currentTime;
+    const t = time ?? midiPlayer.currentTime;
     const pct = (t / dur) * 100;
     timelineScrubber.value = pct;
     timelineProgressBar.style.width = `${pct}%`;
@@ -607,14 +607,32 @@
     totalTimeEl.innerText = formatTime(dur);
   }
 
-  function updateCursorPosition() {
+  // Target time of a timeline seek the player hasn't reported yet, or null
+  // once it has (its position is near the target) or the deadline passed.
+  function pendingSeekTime() {
+    const seek = state.pendingSeek;
+    if (!seek) return null;
+    if (
+      performance.now() > seek.until ||
+      Math.abs(midiPlayer.currentTime - seek.time) < 0.25
+    ) {
+      state.pendingSeek = null;
+      return null;
+    }
+    return seek.time;
+  }
+
+  // `time` (song seconds) overrides the player's position, e.g. while the
+  // timeline is being dragged; no output latency applies to it then.
+  function updateCursorPosition(time) {
     const beats = state.metadata ? state.metadata.beats : null;
     if (!beats || beats.length === 0) {
       virtualRenderer.hideCursor();
       return;
     }
 
-    const currTime = midiPlayer.currentTime + midiPlayer.audioLatency;
+    const currTime =
+      time ?? midiPlayer.currentTime + midiPlayer.audioLatency;
     const pos = getCursorPosition(currTime, beats);
 
     if (pos) {
@@ -730,9 +748,21 @@
   }
 
   function rewind() {
-    midiPlayer.currentTime = 0;
-    updateTimelineScrubber();
-    updateCursorPosition();
+    seekTo(0);
+  }
+
+  // Moves playback to `t` seconds and shows it right away: the player's own
+  // position only follows once its audio thread has handled the seek.
+  function seekTo(t) {
+    midiPlayer.currentTime = t;
+    state.pendingSeek = { time: t, until: performance.now() + 500 };
+    updateTimelineScrubber(t);
+    updateCursorPosition(t);
+  }
+
+  // Playback position, counting a seek the player hasn't reported yet.
+  function currentPosition() {
+    return pendingSeekTime() ?? midiPlayer.currentTime;
   }
 
   function toggleMute() {
