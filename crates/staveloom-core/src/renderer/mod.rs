@@ -329,8 +329,8 @@ impl Renderer {
 
     pub fn apply_mobile_preset(&mut self) {
         self.spacing_strategy = SpacingStrategy::Mobile;
-        self.margin_left = 6.0;
-        self.margin_right = 6.0;
+        self.margin_left = 2.0;
+        self.margin_right = 2.0;
         self.margin_top = 28.0;
         self.part_distance = 72.0;
         self.grand_staff_distance = 72.0;
@@ -655,12 +655,34 @@ fn notation_top_clearance(notations: &[Notation]) -> f32 {
 }
 
 impl Renderer {
+    /// How far left of the staves the score's braces / brackets reach: a
+    /// brace (multi-staff part or brace group) about 22px, a bracket's bar 6px.
+    fn group_symbol_reach(score: &Score) -> f32 {
+        let has_brace_group = score.part_list.iter().any(|item| {
+            matches!(item, PartListItem::Group(g) if matches!(g.symbol, Some(GroupSymbol::Brace)))
+        });
+        let has_multi_staff = score.parts.iter().any(|p| {
+            p.measures.iter().any(|m| m.attributes.as_ref().and_then(|a| a.staves).is_some_and(|n| n > 1))
+        });
+        let has_bracket = score.part_list.iter().any(|item| {
+            matches!(item, PartListItem::Group(g) if matches!(g.symbol, Some(GroupSymbol::Bracket)))
+        });
+        if has_brace_group || has_multi_staff {
+            24.0
+        } else if has_bracket {
+            8.0
+        } else {
+            0.0
+        }
+    }
+
     fn calculate_system_margin(&self, score: &Score, is_first: bool) -> f32 {
         if !is_first && self.spacing_strategy == SpacingStrategy::Mobile {
             // Mobile mode only draws part/group name labels on the first system
             // (see the draw call sites below), so later systems don't need to
-            // reserve any label width in their left margin.
-            return self.margin_left;
+            // reserve any label width in their left margin — only room for the
+            // braces / brackets drawn left of the staves (see draw_group_symbol).
+            return self.margin_left.max(Self::group_symbol_reach(score));
         }
         let mut max_label_width: f32 = 0.0;
         let part_font_size = if is_first { 16.0 } else { 12.0 };

@@ -47,7 +47,12 @@
     preMobileWidthValue: null,
   };
 
-  const MOBILE_AUTO_BREAKPOINT = 480;
+  // Phone / tablet, detected from the user agent in index.html.
+  const IS_MOBILE_DEVICE = document.documentElement.classList.contains("is-mobile");
+  // Mobile renders the page this many times wider than the screen; the score
+  // is fitted to the screen width, so it shows scaled down by the same factor
+  // (more measures per line).
+  const MOBILE_RENDER_SCALE = 2;
 
   let animFrameId = null;
 
@@ -114,8 +119,16 @@
       .catch((e) => console.warn("SoundFontLoader init failed:", e));
 
     applyAutoMobileDetect(true);
+    // On a mobile device the render width follows the screen: when rotating
+    // changes it, render the score again (once the resizing settles).
+    let resizeTimer = null;
     window.addEventListener("resize", () => {
-      if (!state.mobileUserOverridden) applyAutoMobileDetect(true);
+      if (state.mobileUserOverridden) return;
+      const before = widthSlider.value;
+      applyAutoMobileDetect(true);
+      if (widthSlider.value === before || !state.rawFileBytes) return;
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(triggerRender, 300);
     });
 
     setupDragAndDrop();
@@ -129,14 +142,15 @@
 
   // ── Mobile Layout Auto-Detect ────────────────────────────────────────────
   function applyAutoMobileDetect(snapWidth) {
-    mobileToggle.checked = window.innerWidth <= MOBILE_AUTO_BREAKPOINT;
+    mobileToggle.checked = IS_MOBILE_DEVICE;
     syncMobileDependentControls(snapWidth);
   }
 
   // Keep the elastic toggle and width slider in sync with the mobile toggle's
-  // current state. Snaps the width down on the off→on transition and restores
-  // it back on the on→off transition, so turning mobile off actually reverts
-  // the rendered width (not just the internal spacing constants).
+  // current state. Snaps the width to MOBILE_RENDER_SCALE × the screen width
+  // on the off→on transition and restores it back on the on→off transition,
+  // so turning mobile off actually reverts the rendered width (not just the
+  // internal spacing constants).
   function syncMobileDependentControls(snapWidth) {
     elasticToggle.disabled = mobileToggle.checked;
     if (!snapWidth) return;
@@ -144,7 +158,12 @@
       if (state.preMobileWidthValue === null) {
         state.preMobileWidthValue = widthSlider.value;
       }
-      const snapped = Math.max(320, Math.min(window.innerWidth, 500));
+      // Follows the screen width, so a rotated device renders to its new
+      // width (capped by the width slider's 2000px).
+      const snapped = Math.min(
+        Math.max(320, window.innerWidth) * MOBILE_RENDER_SCALE,
+        2000,
+      );
       widthSlider.value = snapped;
       widthVal.innerText = `${snapped}px`;
     } else if (state.preMobileWidthValue !== null) {
@@ -307,7 +326,7 @@
     midiPlayer.onEnded = () => {
       pauseIcon.classList.add("hidden");
       playIcon.classList.remove("hidden");
-      state.isPlaying = false;
+      setPlaying(false);
       cancelAnimationFrame(animFrameId);
       seekTo(0);
     };
@@ -357,7 +376,7 @@
     // Stop audio immediately so the old song does not play during re-render/SF2 load.
     if (state.isPlaying) {
       midiPlayer.pause();
-      state.isPlaying = false;
+      setPlaying(false);
       playIcon.classList.remove("hidden");
       pauseIcon.classList.add("hidden");
       cancelAnimationFrame(animFrameId);
@@ -717,6 +736,13 @@
   }
 
   // ── Playback Controls ────────────────────────────────────────────────────
+  // Playing state, mirrored on <html class="is-playing"> so the stylesheet
+  // can shrink the toolbar on mobile while the score plays.
+  function setPlaying(playing) {
+    state.isPlaying = playing;
+    document.documentElement.classList.toggle("is-playing", playing);
+  }
+
   function togglePlay() {
     if (!midiPlayer.isReady) {
       startPlayback();
@@ -724,7 +750,7 @@
     }
     if (state.isPlaying) {
       midiPlayer.pause();
-      state.isPlaying = false;
+      setPlaying(false);
       playIcon.classList.remove("hidden");
       pauseIcon.classList.add("hidden");
       cancelAnimationFrame(animFrameId);
@@ -741,7 +767,7 @@
     // completes produces silence on iOS).
     midiPlayer.unlockAudio();
     await midiPlayer.play();
-    state.isPlaying = true;
+    setPlaying(true);
     playIcon.classList.add("hidden");
     pauseIcon.classList.remove("hidden");
     startPlaybackLoop();

@@ -2,10 +2,11 @@
 // Strategy:
 //   install  → precache all static app assets
 //   activate → purge stale caches
-//   fetch    → cache-first for all GET requests; dynamic caching on network hit
+//   fetch    → pages network-first (cache = offline fallback); other GET
+//              requests cache-first; dynamic caching on network hit
 //              ignoreSearch: true so versioned URLs (?v=N) match cached assets
 
-const CACHE_VERSION = "v38";
+const CACHE_VERSION = "v46";
 const CACHE_NAME = `staveloom-player-${CACHE_VERSION}`;
 
 // Static assets to precache on install.
@@ -86,6 +87,26 @@ self.addEventListener("fetch", (event) => {
 
 async function handleFetch(request) {
   const cache = await caches.open(CACHE_NAME);
+
+  // The page itself is network-first: it carries the device detection and the
+  // asset versions, so a cached copy would keep serving the previous release
+  // until a second reload. The cache is only its offline fallback.
+  if (request.mode === "navigate") {
+    try {
+      const response = await fetch(request);
+      if (response.ok) cache.put(request, response.clone());
+      return response;
+    } catch (_err) {
+      const fallback =
+        (await cache.match(request, { ignoreSearch: true })) ||
+        (await cache.match("./index.html"));
+      if (fallback) return fallback;
+      return new Response("Offline — resource not cached", {
+        status: 503,
+        headers: { "Content-Type": "text/plain" },
+      });
+    }
+  }
 
   // Cache-first: ignoreSearch lets ?v=N versioned URLs hit the unversioned cache entry
   const cached = await cache.match(request, { ignoreSearch: true });

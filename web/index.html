@@ -8,6 +8,42 @@
         />
         <title>Staveloom</title>
 
+        <!-- Device detection, before first paint: phones by their user
+             agent (not the screen size; tablets and iPads excluded) get
+             <html class="is-mobile">, which player.js (mobile layout) and
+             style.css (score margins) follow; they and narrow windows get
+             "sidebar-overlay" (sidebar behind the hamburger toggle). -->
+        <script>
+            (function () {
+                var ua = navigator.userAgent || "";
+                var mobile;
+                if (
+                    navigator.userAgentData &&
+                    typeof navigator.userAgentData.mobile === "boolean"
+                ) {
+                    // false on tablets
+                    mobile = navigator.userAgentData.mobile;
+                } else {
+                    // iPadOS presents itself as a Mac; only it has touch.
+                    var tablet =
+                        /iPad|Tablet|Kindle|Silk/i.test(ua) ||
+                        (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ||
+                        (/Android/i.test(ua) && !/Mobile/i.test(ua));
+                    mobile =
+                        !tablet &&
+                        /iPhone|iPod|Android|Mobile|BlackBerry|Opera Mini|IEMobile/i.test(ua);
+                }
+                var root = document.documentElement;
+                root.classList.toggle("is-mobile", mobile);
+                var narrow = window.matchMedia("(max-width: 768px)");
+                function syncOverlay() {
+                    root.classList.toggle("sidebar-overlay", mobile || narrow.matches);
+                }
+                syncOverlay();
+                narrow.addEventListener("change", syncOverlay);
+            })();
+        </script>
+
         <!-- Bravura font preload — fetch starts immediately so it's ready before first SVG render -->
         <link
             rel="preload"
@@ -581,11 +617,16 @@
                 );
                 backdrop.addEventListener("click", close);
 
-                // Close sidebar when a file is selected (auto-collapses on mobile)
+                // Close sidebar when a file is selected (when it is an overlay).
                 document
                     .getElementById("file-input")
                     .addEventListener("change", () => {
-                        if (window.innerWidth <= 768) close();
+                        if (
+                            document.documentElement.classList.contains(
+                                "sidebar-overlay",
+                            )
+                        )
+                            close();
                     });
             })();
         </script>

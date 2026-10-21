@@ -857,96 +857,119 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 /* ── Mobile breakpoint ────────────────────────────────────────────────────── */
+/* Sidebar as an overlay behind the hamburger toggle: on phones and tablets
+   (any orientation; <html class="sidebar-overlay"> is set in index.html) and
+   in narrow desktop windows. */
+/* Sidebar slides in as an overlay */
+html.sidebar-overlay #sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100vh;
+    z-index: 300;
+    transform: translateX(-100%);
+    transition: transform var(--transition-slow);
+    width: 300px;
+    box-shadow: none;
+}
+
+html.sidebar-overlay #sidebar.sidebar-open {
+    transform: translateX(0);
+    box-shadow: var(--shadow-lg);
+}
+
+/* Semi-transparent backdrop closes sidebar on tap */
+html.sidebar-overlay #sidebar-backdrop {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    z-index: 299;
+    animation: fadeIn 0.2s ease forwards;
+}
+
+html.sidebar-overlay #sidebar-backdrop.sidebar-open {
+    display: block;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+/* Hamburger toggle button — fixed top-left of main area */
+html.sidebar-overlay #sidebar-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    top: 14px;
+    left: 14px;
+    z-index: 200;
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    border: 1px solid var(--border-color);
+    background: var(--glass-bg);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    color: var(--text-primary);
+    cursor: pointer;
+    transition: var(--transition-fast);
+    box-shadow: var(--shadow-sm);
+}
+
+html.sidebar-overlay #sidebar-toggle:hover {
+    border-color: var(--accent);
+    box-shadow: 0 0 12px var(--accent-glow);
+}
+
+/* Icon swap: hamburger ↔ close */
+html.sidebar-overlay #sidebar-toggle .icon-menu {
+    display: block;
+}
+html.sidebar-overlay #sidebar-toggle .icon-close {
+    display: none;
+}
+html.sidebar-overlay #sidebar-toggle.sidebar-open .icon-menu {
+    display: none;
+}
+html.sidebar-overlay #sidebar-toggle.sidebar-open .icon-close {
+    display: block;
+}
+
+/* Keep the score clear of the hamburger toggle. */
+html.sidebar-overlay #score-viewport {
+    padding-top: 64px;
+}
+
+/* Phones and tablets (<html class="is-mobile">): the score fills the screen
+   width. The page is rendered wider than the screen (MOBILE_RENDER_SCALE in
+   player.js) and fitted to it, so the container must not size itself to the
+   SVG's own width. */
+html.is-mobile #score-viewport {
+    padding-left: 4px;
+    padding-right: 4px;
+}
+
+html.is-mobile #score-canvas-container {
+    width: 100%;
+}
+
+html.is-mobile #score-canvas {
+    padding: 16px 4px;
+    border-radius: 8px;
+}
+
 @media (max-width: 768px) {
-    /* Sidebar slides in as an overlay */
-    #sidebar {
-        position: fixed;
-        top: 0;
-        left: 0;
-        height: 100vh;
-        z-index: 300;
-        transform: translateX(-100%);
-        transition: transform var(--transition-slow);
-        width: 300px;
-        box-shadow: none;
-    }
-
-    #sidebar.sidebar-open {
-        transform: translateX(0);
-        box-shadow: var(--shadow-lg);
-    }
-
-    /* Semi-transparent backdrop closes sidebar on tap */
-    #sidebar-backdrop {
-        display: none;
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.55);
-        backdrop-filter: blur(2px);
-        -webkit-backdrop-filter: blur(2px);
-        z-index: 299;
-        animation: fadeIn 0.2s ease forwards;
-    }
-
-    #sidebar-backdrop.sidebar-open {
-        display: block;
-    }
-
-    @keyframes fadeIn {
-        from {
-            opacity: 0;
-        }
-        to {
-            opacity: 1;
-        }
-    }
-
-    /* Hamburger toggle button — fixed top-left of main area */
-    #sidebar-toggle {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        position: fixed;
-        top: 14px;
-        left: 14px;
-        z-index: 200;
-        width: 40px;
-        height: 40px;
-        border-radius: 12px;
-        border: 1px solid var(--border-color);
-        background: var(--glass-bg);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        color: var(--text-primary);
-        cursor: pointer;
-        transition: var(--transition-fast);
-        box-shadow: var(--shadow-sm);
-    }
-
-    #sidebar-toggle:hover {
-        border-color: var(--accent);
-        box-shadow: 0 0 12px var(--accent-glow);
-    }
-
-    /* Icon swap: hamburger ↔ close */
-    #sidebar-toggle .icon-menu {
-        display: block;
-    }
-    #sidebar-toggle .icon-close {
-        display: none;
-    }
-    #sidebar-toggle.sidebar-open .icon-menu {
-        display: none;
-    }
-    #sidebar-toggle.sidebar-open .icon-close {
-        display: block;
-    }
-
     /* Push score content down — account for toggle button + 2-row controller + safe area */
     #score-viewport {
-        padding-top: 64px;
-        padding-left: 12px;
-        padding-right: 12px;
         /* 2-row controller (~150px) + bottom gap + home indicator */
         padding-bottom: calc(180px + env(safe-area-inset-bottom, 0px));
     }
@@ -1033,4 +1056,47 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 ::-webkit-scrollbar-thumb:hover {
     background: var(--text-muted);
+}
+
+/* ── Mobile, while playing: one compact row ───────────────────────────────── */
+/* Only the timeline and the pause button stay (<html class="is-mobile        */
+/* is-playing">, set in index.html / player.js); pausing restores the bar.  */
+html.is-mobile.is-playing #floating-controller {
+    flex-direction: row;
+    align-items: center;
+    gap: 12px;
+    padding: 4px 6px 4px 16px;
+    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
+    border-radius: 22px;
+}
+
+html.is-mobile.is-playing .timeline-container {
+    flex: 1;
+    width: auto;
+}
+
+html.is-mobile.is-playing .controller-inner {
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    gap: 0;
+}
+
+html.is-mobile.is-playing .time-display,
+html.is-mobile.is-playing .utility-controls,
+html.is-mobile.is-playing #rewind-btn {
+    display: none;
+}
+
+html.is-mobile.is-playing .playback-controls {
+    flex: 0 0 auto;
+}
+
+html.is-mobile.is-playing .play-pulse-btn {
+    width: 32px;
+    height: 32px;
+}
+
+html.is-mobile.is-playing .play-pulse-btn svg {
+    width: 16px;
+    height: 16px;
 }
