@@ -197,6 +197,15 @@ impl super::Renderer {
                                 }
                             }
                             crate::models::MeasureElement::Forward(d) => {
+                                // Grace notes with no main note after them in
+                                // this voice: reserve their width here.
+                                if pending_grace_w > 0.0 {
+                                    let entry = onset_needs.entry(p_time).or_insert_with(
+                                        crate::renderer::types::OnsetNeeds::default,
+                                    );
+                                    entry.prefix = entry.prefix.max(pending_grace_w);
+                                    pending_grace_w = 0.0;
+                                }
                                 onset_needs
                                     .entry(p_time)
                                     .or_insert_with(crate::renderer::types::OnsetNeeds::default);
@@ -204,6 +213,15 @@ impl super::Renderer {
                                 p_chord_time = p_time;
                             }
                             crate::models::MeasureElement::Backup(d) => {
+                                // Grace notes with no main note after them in
+                                // this voice: reserve their width here.
+                                if pending_grace_w > 0.0 {
+                                    let entry = onset_needs.entry(p_time).or_insert_with(
+                                        crate::renderer::types::OnsetNeeds::default,
+                                    );
+                                    entry.prefix = entry.prefix.max(pending_grace_w);
+                                    pending_grace_w = 0.0;
+                                }
                                 p_time -= (*d as f64 * 10080.0 / divisions as f64).round() as i32;
                                 p_time = p_time.max(0);
                                 p_chord_time = p_time;
@@ -295,6 +313,16 @@ impl super::Renderer {
                             }
                             _ => {}
                         }
+                    }
+
+                    // Grace notes ending the measure (no main note after
+                    // them): their width goes before the barline. The renderer
+                    // lays them out leftwards from there.
+                    if pending_grace_w > 0.0 {
+                        let entry = onset_needs
+                            .entry(p_time)
+                            .or_insert_with(crate::renderer::types::OnsetNeeds::default);
+                        entry.prefix = entry.prefix.max(pending_grace_w);
                     }
 
                     // Noteheads displaced sideways (voices avoiding each other,

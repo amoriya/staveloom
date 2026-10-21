@@ -123,6 +123,12 @@ pub struct Renderer {
     measure_span: std::cell::Cell<(f32, f32)>,
     /// Index of that measure in its part.
     current_measure_idx: std::cell::Cell<usize>,
+    /// How much the measure being drawn is squeezed (drawn / natural content
+    /// width, at most 1), applied to grace-note offsets.
+    grace_scale: std::cell::Cell<f32>,
+    /// Grace notes drawn, as (measure index, part id, voice, onset, x), so the
+    /// play cursor can pass over them while they sound (see `GraceMark`).
+    grace_marks: std::cell::RefCell<Vec<GraceMark>>,
     /// Hairpins (part id -> (start measure index, number)) that would sit
     /// between two staves but cross a measure with a cross-staff beam, which
     /// fills that gap: they go outside the part on every system instead.
@@ -182,6 +188,17 @@ struct GapItem {
     x2: f32,
     top: f32,
     bottom: f32,
+}
+
+/// A grace note as drawn (see `Renderer::grace_marks`).
+#[derive(Clone)]
+struct GraceMark {
+    measure_idx: usize,
+    part_id: String,
+    voice: i32,
+    /// Onset it is written at (that of the note it precedes, or the measure end).
+    time: i32,
+    x: f32,
 }
 
 /// A slur curve drawn in the current system (see `Renderer::placed_slurs`):
@@ -281,6 +298,8 @@ impl Default for Renderer {
             gap_items: std::cell::RefCell::new(Vec::new()),
             measure_span: std::cell::Cell::new((0.0, 0.0)),
             current_measure_idx: std::cell::Cell::new(0),
+            grace_scale: std::cell::Cell::new(1.0),
+            grace_marks: std::cell::RefCell::new(Vec::new()),
             outer_wedges: std::cell::RefCell::new(HashMap::new()),
             current_part_id: std::cell::RefCell::new(String::new()),
             open_wavy_notes: std::cell::RefCell::new(HashSet::new()),
@@ -2479,6 +2498,18 @@ impl Renderer {
                                 measure_x + initial_attr_width_shared + self.measure_start_padding;
                             let content_width =
                                 m_width - initial_attr_width_shared - self.measure_start_padding;
+                            // A measure squeezed below its natural width moves its
+                            // notes closer; grace notes (spaced in fixed px before
+                            // their onset) must close up the same way. Only mildly:
+                            // a large ratio comes from width bookkeeping (a first
+                            // measure's system-start attributes), not real squeezing.
+                            let natural_w = measure_spacings[m_idx]._total_content_width;
+                            self.current_measure_idx.set(m_idx);
+                            self.grace_scale.set(if natural_w > 0.0 {
+                                (content_width / natural_w).clamp(0.85, 1.0)
+                            } else {
+                                1.0
+                            });
 
                             if id == &score.parts[0].id {
                                 measure_coords_in_system.push((
@@ -2545,15 +2576,10 @@ impl Renderer {
                                                         let used = used_grace_widths_temp
                                                             .entry(temp_group_time_pos)
                                                             .or_insert(0.0);
-                                                        let current_note_w = 12.0
-                                                            + if temp_chord_group
-                                                                .iter()
-                                                                .any(|n| n.accidental.is_some())
-                                                            {
-                                                                10.0
-                                                            } else {
-                                                                0.0
-                                                            };
+                                                        let current_note_w = temp_chord_group
+                                                            .iter()
+                                                            .map(|n| self.estimate_grace_spacing(n))
+                                                            .fold(0.0, f32::max);
                                                         let offset = -(total_grace_w - *used);
                                                         *used += current_note_w;
                                                         offset
@@ -2628,15 +2654,10 @@ impl Renderer {
                                                     let used = used_grace_widths_temp
                                                         .entry(temp_group_time_pos)
                                                         .or_insert(0.0);
-                                                    let current_note_w = 12.0
-                                                        + if temp_chord_group
-                                                            .iter()
-                                                            .any(|n| n.accidental.is_some())
-                                                        {
-                                                            10.0
-                                                        } else {
-                                                            0.0
-                                                        };
+                                                    let current_note_w = temp_chord_group
+                                                        .iter()
+                                                        .map(|n| self.estimate_grace_spacing(n))
+                                                        .fold(0.0, f32::max);
                                                     let offset = -(total_grace_w - *used);
                                                     *used += current_note_w;
                                                     offset
@@ -2707,15 +2728,10 @@ impl Renderer {
                                                     let used = used_grace_widths_temp
                                                         .entry(temp_group_time_pos)
                                                         .or_insert(0.0);
-                                                    let current_note_w = 12.0
-                                                        + if temp_chord_group
-                                                            .iter()
-                                                            .any(|n| n.accidental.is_some())
-                                                        {
-                                                            10.0
-                                                        } else {
-                                                            0.0
-                                                        };
+                                                    let current_note_w = temp_chord_group
+                                                        .iter()
+                                                        .map(|n| self.estimate_grace_spacing(n))
+                                                        .fold(0.0, f32::max);
                                                     let offset = -(total_grace_w - *used);
                                                     *used += current_note_w;
                                                     offset
@@ -2800,15 +2816,10 @@ impl Renderer {
                                                     let used = used_grace_widths_temp
                                                         .entry(temp_group_time_pos)
                                                         .or_insert(0.0);
-                                                    let current_note_w = 12.0
-                                                        + if temp_chord_group
-                                                            .iter()
-                                                            .any(|n| n.accidental.is_some())
-                                                        {
-                                                            10.0
-                                                        } else {
-                                                            0.0
-                                                        };
+                                                    let current_note_w = temp_chord_group
+                                                        .iter()
+                                                        .map(|n| self.estimate_grace_spacing(n))
+                                                        .fold(0.0, f32::max);
                                                     let offset = -(total_grace_w - *used);
                                                     *used += current_note_w;
                                                     offset
@@ -2941,15 +2952,10 @@ impl Renderer {
                                                     let used = used_grace_widths_temp
                                                         .entry(temp_group_time_pos)
                                                         .or_insert(0.0);
-                                                    let current_note_w = 12.0
-                                                        + if temp_chord_group
-                                                            .iter()
-                                                            .any(|n| n.accidental.is_some())
-                                                        {
-                                                            10.0
-                                                        } else {
-                                                            0.0
-                                                        };
+                                                    let current_note_w = temp_chord_group
+                                                        .iter()
+                                                        .map(|n| self.estimate_grace_spacing(n))
+                                                        .fold(0.0, f32::max);
                                                     let offset = -(total_grace_w - *used);
                                                     *used += current_note_w;
                                                     offset
@@ -3054,13 +3060,10 @@ impl Renderer {
                                     let used = used_grace_widths_temp
                                         .entry(temp_group_time_pos)
                                         .or_insert(0.0);
-                                    let current_note_w = 12.0
-                                        + if temp_chord_group.iter().any(|n| n.accidental.is_some())
-                                        {
-                                            10.0
-                                        } else {
-                                            0.0
-                                        };
+                                    let current_note_w = temp_chord_group
+                                        .iter()
+                                        .map(|n| self.estimate_grace_spacing(n))
+                                        .fold(0.0, f32::max);
                                     let offset = -(total_grace_w - *used);
                                     *used += current_note_w;
                                     offset
@@ -3211,15 +3214,10 @@ impl Renderer {
                                                             let used = used_grace_widths
                                                                 .entry(group_time_pos)
                                                                 .or_insert(0.0);
-                                                            let current_note_w = 12.0
-                                                                + if chord_group
-                                                                    .iter()
-                                                                    .any(|n| n.accidental.is_some())
-                                                                {
-                                                                    10.0
-                                                                } else {
-                                                                    0.0
-                                                                };
+                                                            let current_note_w = chord_group
+                                                                .iter()
+                                                                .map(|n| self.estimate_grace_spacing(n))
+                                                                .fold(0.0, f32::max);
                                                             let offset = -(total_grace_w - *used);
                                                             *used += current_note_w;
                                                             offset
@@ -3377,15 +3375,10 @@ impl Renderer {
                                                     let used = used_grace_widths
                                                         .entry(group_time_pos)
                                                         .or_insert(0.0);
-                                                    let current_note_w = 12.0
-                                                        + if chord_group
-                                                            .iter()
-                                                            .any(|n| n.accidental.is_some())
-                                                        {
-                                                            10.0
-                                                        } else {
-                                                            0.0
-                                                        };
+                                                    let current_note_w = chord_group
+                                                        .iter()
+                                                        .map(|n| self.estimate_grace_spacing(n))
+                                                        .fold(0.0, f32::max);
                                                     let offset = -(total_grace_w - *used);
                                                     *used += current_note_w;
                                                     offset
@@ -3489,15 +3482,10 @@ impl Renderer {
                                                     let used = used_grace_widths
                                                         .entry(group_time_pos)
                                                         .or_insert(0.0);
-                                                    let current_note_w = 12.0
-                                                        + if chord_group
-                                                            .iter()
-                                                            .any(|n| n.accidental.is_some())
-                                                        {
-                                                            10.0
-                                                        } else {
-                                                            0.0
-                                                        };
+                                                    let current_note_w = chord_group
+                                                        .iter()
+                                                        .map(|n| self.estimate_grace_spacing(n))
+                                                        .fold(0.0, f32::max);
                                                     let offset = -(total_grace_w - *used);
                                                     *used += current_note_w;
                                                     offset
@@ -3615,15 +3603,10 @@ impl Renderer {
                                                     let used = used_grace_widths
                                                         .entry(group_time_pos)
                                                         .or_insert(0.0);
-                                                    let current_note_w = 12.0
-                                                        + if chord_group
-                                                            .iter()
-                                                            .any(|n| n.accidental.is_some())
-                                                        {
-                                                            10.0
-                                                        } else {
-                                                            0.0
-                                                        };
+                                                    let current_note_w = chord_group
+                                                        .iter()
+                                                        .map(|n| self.estimate_grace_spacing(n))
+                                                        .fold(0.0, f32::max);
                                                     let offset = -(total_grace_w - *used);
                                                     *used += current_note_w;
                                                     offset
@@ -3814,15 +3797,10 @@ impl Renderer {
                                                 let used = used_grace_widths
                                                     .entry(group_time_pos)
                                                     .or_insert(0.0);
-                                                let current_note_w = 12.0
-                                                    + if chord_group
-                                                        .iter()
-                                                        .any(|n| n.accidental.is_some())
-                                                    {
-                                                        10.0
-                                                    } else {
-                                                        0.0
-                                                    };
+                                                let current_note_w = chord_group
+                                                    .iter()
+                                                    .map(|n| self.estimate_grace_spacing(n))
+                                                    .fold(0.0, f32::max);
                                                 let offset = -(total_grace_w - *used);
                                                 *used += current_note_w;
                                                 offset
@@ -3950,15 +3928,10 @@ impl Renderer {
                                                 let used = used_grace_widths
                                                     .entry(group_time_pos)
                                                     .or_insert(0.0);
-                                                let current_note_w = 12.0
-                                                    + if chord_group
-                                                        .iter()
-                                                        .any(|n| n.accidental.is_some())
-                                                    {
-                                                        10.0
-                                                    } else {
-                                                        0.0
-                                                    };
+                                                let current_note_w = chord_group
+                                                    .iter()
+                                                    .map(|n| self.estimate_grace_spacing(n))
+                                                    .fold(0.0, f32::max);
                                                 let offset = -(total_grace_w - *used);
                                                 *used += current_note_w;
                                                 offset
@@ -4063,15 +4036,10 @@ impl Renderer {
                                                     let used = used_grace_widths
                                                         .entry(group_time_pos)
                                                         .or_insert(0.0);
-                                                    let current_note_w = 12.0
-                                                        + if chord_group
-                                                            .iter()
-                                                            .any(|n| n.accidental.is_some())
-                                                        {
-                                                            10.0
-                                                        } else {
-                                                            0.0
-                                                        };
+                                                    let current_note_w = chord_group
+                                                        .iter()
+                                                        .map(|n| self.estimate_grace_spacing(n))
+                                                        .fold(0.0, f32::max);
                                                     let offset = -(total_grace_w - *used);
                                                     *used += current_note_w;
                                                     offset
@@ -4149,15 +4117,10 @@ impl Renderer {
                                                 let used = used_grace_widths
                                                     .entry(group_time_pos)
                                                     .or_insert(0.0);
-                                                let current_note_w = 12.0
-                                                    + if chord_group
-                                                        .iter()
-                                                        .any(|n| n.accidental.is_some())
-                                                    {
-                                                        10.0
-                                                    } else {
-                                                        0.0
-                                                    };
+                                                let current_note_w = chord_group
+                                                    .iter()
+                                                    .map(|n| self.estimate_grace_spacing(n))
+                                                    .fold(0.0, f32::max);
                                                 let offset = -(total_grace_w - *used);
                                                 *used += current_note_w;
                                                 offset
@@ -4301,15 +4264,10 @@ impl Renderer {
                                                 let used = used_grace_widths
                                                     .entry(group_time_pos)
                                                     .or_insert(0.0);
-                                                let current_note_w = 12.0
-                                                    + if chord_group
-                                                        .iter()
-                                                        .any(|n| n.accidental.is_some())
-                                                    {
-                                                        10.0
-                                                    } else {
-                                                        0.0
-                                                    };
+                                                let current_note_w = chord_group
+                                                    .iter()
+                                                    .map(|n| self.estimate_grace_spacing(n))
+                                                    .fold(0.0, f32::max);
                                                 let offset = -(total_grace_w - *used);
                                                 *used += current_note_w;
                                                 offset
@@ -4420,15 +4378,10 @@ impl Renderer {
                                                     let used = used_grace_widths
                                                         .entry(group_time_pos)
                                                         .or_insert(0.0);
-                                                    let current_note_w = 12.0
-                                                        + if chord_group
-                                                            .iter()
-                                                            .any(|n| n.accidental.is_some())
-                                                        {
-                                                            10.0
-                                                        } else {
-                                                            0.0
-                                                        };
+                                                    let current_note_w = chord_group
+                                                        .iter()
+                                                        .map(|n| self.estimate_grace_spacing(n))
+                                                        .fold(0.0, f32::max);
                                                     let offset = -(total_grace_w - *used);
                                                     *used += current_note_w;
                                                     offset
@@ -4569,13 +4522,10 @@ impl Renderer {
                                             .unwrap_or(&0.0);
                                         let used =
                                             used_grace_widths.entry(group_time_pos).or_insert(0.0);
-                                        let current_note_w = 12.0
-                                            + if chord_group.iter().any(|n| n.accidental.is_some())
-                                            {
-                                                10.0
-                                            } else {
-                                                0.0
-                                            };
+                                        let current_note_w = chord_group
+                                            .iter()
+                                            .map(|n| self.estimate_grace_spacing(n))
+                                            .fold(0.0, f32::max);
                                         let offset = -(total_grace_w - *used);
                                         *used += current_note_w;
                                         offset
@@ -5332,6 +5282,7 @@ impl Renderer {
         let mut metadata = PlayMetadata::default();
         let timeline = crate::timeline::TimelineSolver::solve(score_in);
         let timing_map = crate::midi_engine::MidiEngine::generate_timing_map(score_in, &timeline);
+        let mut cursor_anchors: HashMap<usize, Vec<(i32, f32)>> = HashMap::new();
 
         for timing_event in timing_map {
             let m_idx = timing_event.measure_index;
@@ -5348,18 +5299,15 @@ impl Renderer {
                 let t = timing_event.tick_offset;
                 let t_scaled = (t as f64 * 10080.0 / 480.0).round() as i32;
 
-                // Find X coordinate
-                let mut best_t = 0;
-                let mut min_diff = i32::MAX;
-                for &map_t in time_to_x.keys() {
-                    let diff = (map_t - t_scaled).abs();
-                    if diff < min_diff {
-                        min_diff = diff;
-                        best_t = map_t;
-                    }
-                }
-                let x_ratio = time_to_x.get(&best_t).cloned().unwrap_or(0.0);
-                let final_x = x_base + x_ratio * m_width;
+                // Find X coordinate: the drawn onset (or grace note, at the
+                // time it sounds) nearest in time.
+                let anchors = cursor_anchors
+                    .entry(m_idx)
+                    .or_insert_with(|| self.cursor_anchors(m_idx, x_base, m_width, time_to_x));
+                let final_x = anchors
+                    .iter()
+                    .min_by_key(|&&(at, _)| (at - t_scaled).abs())
+                    .map_or(x_base, |&(_, x)| x);
 
                 metadata.beats.push(crate::models::BeatEvent {
                     x: final_x,
@@ -7542,6 +7490,50 @@ impl Renderer {
         result
     }
 
+    /// Cursor positions (onset time, x) for measure `m_idx`: its drawn onsets,
+    /// plus its grace notes at the times the MIDI engine plays them. A run
+    /// ending the measure sounds within the last three quarters of the note
+    /// before it; any other run takes a 32nd per grace from its onset on,
+    /// delaying the note it precedes.
+    fn cursor_anchors(
+        &self,
+        m_idx: usize,
+        x_base: f32,
+        m_width: f32,
+        time_to_x: &HashMap<i32, f32>,
+    ) -> Vec<(i32, f32)> {
+        const GRACE: i32 = 10080 / 8;
+        let mut anchors: HashMap<i32, f32> =
+            time_to_x.iter().map(|(&t, &r)| (t, x_base + r * m_width)).collect();
+        let end = time_to_x.keys().copied().max().unwrap_or(0);
+        let mut runs: HashMap<(String, i32, i32), Vec<f32>> = HashMap::new();
+        for m in self.grace_marks.borrow().iter().filter(|m| m.measure_idx == m_idx) {
+            runs.entry((m.part_id.clone(), m.voice, m.time)).or_default().push(m.x);
+        }
+        let mut runs: Vec<_> = runs.into_iter().collect();
+        runs.sort_by_key(|((_, _, t), _)| *t);
+        for ((_, _, t), mut xs) in runs {
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let n = xs.len() as i32;
+            if t >= end && end > 0 {
+                let prev = time_to_x.keys().copied().filter(|&k| k < t).max().unwrap_or(0);
+                let unit = GRACE.min((t - prev) * 3 / 4 / n.max(1)).max(1);
+                for (k, x) in xs.into_iter().enumerate() {
+                    anchors.insert(t - (n - k as i32) * unit, x);
+                }
+            } else {
+                let main_x = anchors.get(&t).copied();
+                for (k, x) in xs.into_iter().enumerate() {
+                    anchors.insert(t + k as i32 * GRACE, x);
+                }
+                if let Some(mx) = main_x {
+                    anchors.insert(t + n * GRACE, mx);
+                }
+            }
+        }
+        anchors.into_iter().collect()
+    }
+
     /// How far each part must move down so that what its upper neighbour
     /// drew late (pedal lines, slurs, directions, beamed stems) clears its
     /// staff and the notes, slurs and directions above it.
@@ -8167,7 +8159,29 @@ impl Renderer {
             .offsets
             .get(&(staff_num, time_pos, chord_group[0].voice.unwrap_or(1)))
             .map_or(0.0, |o| o * self.note_head_width);
-        let x = start_x + x_offset + grace_offset + voice_offset;
+        let x = start_x + x_offset + grace_offset * self.grace_scale.get() + voice_offset;
+        // (Measurement passes run with no width; only real drawing counts.)
+        if chord_group[0].grace.is_some() && width > 0.0 {
+            let mark = GraceMark {
+                measure_idx: self.current_measure_idx.get(),
+                part_id: self.current_part_id.borrow().clone(),
+                voice: chord_group[0].voice.unwrap_or(1),
+                time: time_pos,
+                x,
+            };
+            let mut marks = self.grace_marks.borrow_mut();
+            // A system laid out again draws its graces again at the same place.
+            let dup = marks.iter().any(|m| {
+                m.measure_idx == mark.measure_idx
+                    && m.part_id == mark.part_id
+                    && m.voice == mark.voice
+                    && m.time == mark.time
+                    && (m.x - mark.x).abs() < 0.5
+            });
+            if !dup {
+                marks.push(mark);
+            }
+        }
         let (new_doc, stem, note_x, note_y, pitches_y, note_xs) = self.draw_chord_group_at(
             doc,
             x,

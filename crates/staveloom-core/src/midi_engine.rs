@@ -559,6 +559,15 @@ impl MidiEngine {
                     let mut chord_stagger: u32 = 0;
                     let mut chord_stagger_step: u32 = 0;
                     let mut grace_stagger_tick: u32 = 0;
+                    // Grace notes ending a voice (no main note after them) can't
+                    // borrow from a following note: they take their time from the
+                    // end of the preceding one instead, which is cut short there.
+                    let mut trailing_grace_offset: u32 = 0;
+                    // Spacing of such a run: a 32nd each, closer if the run must
+                    // fit the last three quarters of the preceding note.
+                    let mut trailing_grace_unit: u32 = midi_tpq / 8;
+                    let mut last_main_onset = p_tick;
+                    let mut last_main_offs: Vec<usize> = Vec::new();
                     let mut onset_base_tick = p_tick;
                     // Furthest point any voice reaches (a later voice may end
                     // earlier than an overfull first one).
@@ -653,9 +662,54 @@ impl MidiEngine {
                             }
                             MeasureElement::Note(note) => {
                                 if !note.is_chord {
-                                    onset_base_tick = p_tick + grace_stagger_tick;
+                                    if note.grace.is_some()
+                                        && grace_stagger_tick == 0
+                                        && trailing_grace_offset == 0
+                                    {
+                                        // Count this run of grace notes when no main note
+                                        // follows it in this voice.
+                                        let mut run = 0u32;
+                                        let mut trailing = true;
+                                        for later in &measure.elements[el_idx..] {
+                                            match later {
+                                                MeasureElement::Note(n) if n.is_chord => {}
+                                                MeasureElement::Note(n) if n.grace.is_some() => {
+                                                    run += 1
+                                                }
+                                                // A forward is time they can play into.
+                                                MeasureElement::Note(_)
+                                                | MeasureElement::Forward(_) => {
+                                                    trailing = false;
+                                                    break;
+                                                }
+                                                MeasureElement::Backup(_) => break,
+                                                _ => {}
+                                            }
+                                        }
+                                        if trailing && run > 0 {
+                                            // The preceding note keeps at least its first
+                                            // quarter.
+                                            let room = p_tick.saturating_sub(last_main_onset) * 3 / 4;
+                                            trailing_grace_unit = (midi_tpq / 8).min(room / run).max(1);
+                                            trailing_grace_offset = run * trailing_grace_unit;
+                                            let cut = p_tick - trailing_grace_offset;
+                                            for &i in &last_main_offs {
+                                                if let Some(ev) = part_raw_events[p_idx].get_mut(i) {
+                                                    ev.tick = ev.tick.min(cut.max(last_main_onset + 1));
+                                                }
+                                            }
+                                        }
+                                    }
+                                    onset_base_tick = p_tick - trailing_grace_offset + grace_stagger_tick;
                                     if note.grace.is_some() {
-                                        grace_stagger_tick += midi_tpq / 8; // 32nd note
+                                        grace_stagger_tick += if trailing_grace_offset > 0 {
+                                            trailing_grace_unit
+                                        } else {
+                                            midi_tpq / 8 // 32nd note
+                                        };
+                                    } else {
+                                        last_main_onset = p_tick;
+                                        last_main_offs.clear();
                                     }
                                     chord_stagger = 0;
                                     chord_stagger_step = 0;
@@ -745,7 +799,11 @@ impl MidiEngine {
                                     }
                                 }
 
-                                let grace_unit = midi_tpq / 8; // 32nd note
+                                let grace_unit = if trailing_grace_offset > 0 {
+                                    trailing_grace_unit
+                                } else {
+                                    midi_tpq / 8 // 32nd note
+                                };
                                 let duration = if note.grace.is_some() {
                                     grace_unit
                                 } else {
@@ -1017,6 +1075,9 @@ impl MidiEngine {
 
                                             if !is_tie_start {
                                                 let note_off_tick = onset_base_tick + duration;
+                                                if note.grace.is_none() {
+                                                    last_main_offs.push(part_raw_events[p_idx].len());
+                                                }
                                                 part_raw_events[p_idx].push(RawTrackEvent {
                                                     tick: note_off_tick.max(onset_tick + 1),
                                                     kind: midly::TrackEventKind::Midi {
@@ -1042,6 +1103,8 @@ impl MidiEngine {
                                 }
                             }
                             MeasureElement::Backup(d) => {
+                                trailing_grace_offset = 0;
+                                last_main_offs.clear();
                                 let b_tick = (*d as f32 * tick_scale) as u32;
                                 // A full-measure Backup (b_tick ≥ theoretical) should always
                                 // reset to the exact measure start regardless of voice-1 overflow.
@@ -1050,10 +1113,14 @@ impl MidiEngine {
                                 } else {
                                     p_tick = p_tick.saturating_sub(b_tick);
                                 }
+                                last_main_onset = p_tick;
                                 grace_stagger_tick = 0;
                             }
                             MeasureElement::Forward(d) => {
+                                trailing_grace_offset = 0;
+                                last_main_offs.clear();
                                 p_tick += (*d as f32 * tick_scale) as u32;
+                                last_main_onset = p_tick;
                                 grace_stagger_tick = 0;
                             }
                             _ => {}
