@@ -49,6 +49,10 @@ pub(crate) struct SlurStartInfo {
     /// the end of the measure as (end x, end y, end staff, end note top,
     /// end note bottom).
     pub known_end: Option<(f32, f32, i32, f32, f32)>,
+    /// The start point is the beginning of a system, the slur continuing
+    /// from the previous one: it isn't attached to a note, so it may move to
+    /// clear this system's first notes.
+    pub resumed: bool,
 }
 
 /// Endpoint candidates of a slur stop seen before its start.
@@ -148,6 +152,8 @@ pub(crate) struct OnsetNeeds {
     pub grace_prefix: f32,
     pub lyric_width: f32,
     pub dir_extents: HashMap<(i32, bool), DirectionExtent>, // (staff, is_below) -> extent
+    /// A note at this onset sits on ledger lines (wider than its notehead).
+    pub ledger: bool,
 }
 
 pub(crate) struct MeasureSpacing {

@@ -210,7 +210,8 @@ struct PlacedSlur {
     y1: f32,
     cx1: f32,
     cx2: f32,
-    cy: f32,
+    cy1: f32,
+    cy2: f32,
     x2: f32,
     y2: f32,
     top: f32,
@@ -247,7 +248,8 @@ impl PlacedSlur {
         }
         let t = 0.5 * (lo + hi);
         let u = 1.0 - t;
-        u * u * u * self.y1 + 3.0 * u * t * self.cy + t * t * t * self.y2
+        u * u * u * self.y1 + 3.0 * u * u * t * self.cy1 + 3.0 * u * t * t * self.cy2
+            + t * t * t * self.y2
     }
 }
 
@@ -733,7 +735,30 @@ impl Renderer {
         let analysis = self.analyze_measures(score);
         let max_measures = analysis.max_measures;
         let raw_measure_widths = analysis.raw_widths;
+        let fixed_measure_widths = analysis.fixed_widths;
         let system_start_extra_widths = analysis.system_start_extra_widths;
+        // Widths of a system's measures stretched (or squeezed) to `usable`:
+        // only the note content of each measure takes up the difference, its
+        // padding and attributes (and the system-start clef, key and time)
+        // keep their size, so every measure's notes are spaced alike.
+        let justify = |indices: &[usize], usable: f32, stretch: bool| -> Vec<f32> {
+            let fixed = |pos: usize, idx: usize| {
+                fixed_measure_widths[idx] + if pos == 0 { system_start_extra_widths[idx] } else { 0.0 }
+            };
+            let fixed_sum: f32 = indices.iter().enumerate().map(|(p, &i)| fixed(p, i)).sum();
+            let content_sum: f32 =
+                indices.iter().map(|&i| raw_measure_widths[i] - fixed_measure_widths[i]).sum();
+            let scale = if stretch && content_sum > 0.0 {
+                ((usable - fixed_sum) / content_sum).max(0.0)
+            } else {
+                1.0
+            };
+            indices
+                .iter()
+                .enumerate()
+                .map(|(p, &i)| fixed(p, i) + (raw_measure_widths[i] - fixed_measure_widths[i]) * scale)
+                .collect()
+        };
         let measure_spacings = analysis.spacings;
         let measure_total_durs = analysis.total_durs;
         let measure_theoretical_durs = analysis.theoretical_durs;
@@ -759,20 +784,7 @@ impl Renderer {
                 };
 
                 if current_sum + candidate_width > usable_width && !current_indices.is_empty() {
-                    let scale = usable_width / current_sum;
-                    let scaled_widths = current_indices
-                        .iter()
-                        .enumerate()
-                        .map(|(pos, &idx)| {
-                            let width = raw_measure_widths[idx]
-                                + if pos == 0 {
-                                    system_start_extra_widths[idx]
-                                } else {
-                                    0.0
-                                };
-                            width * scale
-                        })
-                        .collect();
+                    let scaled_widths = justify(&current_indices, usable_width, true);
                     systems.push(SystemLayout {
                         measure_indices: current_indices.clone(),
                         measure_widths: scaled_widths,
@@ -794,24 +806,8 @@ impl Renderer {
                     subsequent_margin
                 };
                 let usable_width = target_width - current_margin_left - self.margin_right;
-                let scale = if current_sum > usable_width * 0.5 {
-                    usable_width / current_sum
-                } else {
-                    1.0
-                };
-                let scaled_widths = current_indices
-                    .iter()
-                    .enumerate()
-                    .map(|(pos, &idx)| {
-                        let width = raw_measure_widths[idx]
-                            + if pos == 0 {
-                                system_start_extra_widths[idx]
-                            } else {
-                                0.0
-                            };
-                        width * scale
-                    })
-                    .collect();
+                let scaled_widths =
+                    justify(&current_indices, usable_width, current_sum > usable_width * 0.5);
                 systems.push(SystemLayout {
                     measure_indices: current_indices,
                     measure_widths: scaled_widths,
@@ -2173,6 +2169,7 @@ impl Renderer {
                             s.y = part_start_y + (s.staff - 1).max(0) as f32 * staff_dist + s.y;
                             s.x = current_margin_left;
                             s.is_continuation = false;
+                            s.resumed = true;
                         }
                     }
                     for t in state.active_ties.values_mut() {
@@ -5079,10 +5076,12 @@ impl Renderer {
                                 // began. The next system's segment resumes at that same
                                 // height.
                                 let end_y = Self::slur_break_y(start_info);
+                                let start_y =
+                                    Self::resumed_slur_start_y(start_info, &start_info.obstacles);
                                 sys_doc = self.draw_slur(
                                     sys_doc,
                                     start_info.x,
-                                    start_info.y,
+                                    start_y,
                                     system_end_x,
                                     end_y,
                                     start_info.is_above,
@@ -11818,6 +11817,7 @@ impl Renderer {
                                         stem_anchor: use_stem_tip || use_stem_tip_below,
                                         pending_stop: None,
                                         known_end: Some((end_x, end_y, p.staff, p.top, p.bottom)),
+                                        resumed: false,
                                     },
                                 );
                                 min_y = min_y.min(cur_y.min(end_y) - 20.0);
@@ -11836,6 +11836,8 @@ impl Renderer {
                                     stem_anchor: use_stem_tip || use_stem_tip_below,
                                     pending_stop: None,
                                     known_end: None,
+
+                                    resumed: false,
                                 },
                             );
                             if is_above {
@@ -11876,6 +11878,8 @@ impl Renderer {
                                             bottom: max_pitch_y,
                                         }),
                                         known_end: None,
+
+                                        resumed: false,
                                     },
                                 );
                             }
@@ -12071,11 +12075,23 @@ impl Renderer {
             let mut obstacles = slur.obstacles.clone();
             if end_staff != slur.staff {
                 // A cross-staff slur heads into the gap toward the end staff:
-                // start-staff notes on the far side of its start point (e.g.
-                // another voice's stems hanging away from that staff) are not
-                // under its path, and would drag the curve right past them.
+                // start-staff elements well past its start point on the far
+                // side (e.g. another voice's stems and beam hanging away from
+                // that staff) are not under its path, and would drag the curve
+                // right past them. Notes only a little beyond it (a melody
+                // rising from the start note) still are.
+                const FAR_SIDE: f32 = 30.0;
                 let toward_up = end_staff < slur.staff;
-                obstacles.retain(|o| if toward_up { o.1 <= slur.y } else { o.1 >= slur.y });
+                // (Judged from where the segment really starts: a resumed one
+                // has moved out over its first notes.)
+                let start_y = Self::resumed_slur_start_y(&slur, &obstacles);
+                obstacles.retain(|o| {
+                    if toward_up {
+                        o.1 <= start_y + FAR_SIDE
+                    } else {
+                        o.1 >= start_y - FAR_SIDE
+                    }
+                });
                 // End-staff notes phrased under a slur of their own that is
                 // over before this one reaches that staff (after its last note
                 // on the start staff) belong to the other hand's phrase played
@@ -12107,8 +12123,9 @@ impl Renderer {
                     .filter(|o| !own_phrases.iter().any(|&(a, b)| o.0 >= a - 2.0 && o.0 <= b + 2.0)),
                 );
             }
+            let start_y = Self::resumed_slur_start_y(&slur, &obstacles);
             doc = self.draw_slur(
-                doc, slur.x, slur.y, end_x, end_y, slur.is_above, &obstacles, slur.staff,
+                doc, slur.x, start_y, end_x, end_y, slur.is_above, &obstacles, slur.staff,
             );
             if end_staff != slur.staff {
                 if let Some(placed) = self.placed_slurs.borrow_mut().last_mut() {
@@ -12289,6 +12306,19 @@ impl Renderer {
         }
     }
 
+    /// Start height of a slur segment: for one resumed at a system start,
+    /// moved outward to clear the notes it meets first (within 80px), as
+    /// nothing anchors it there; otherwise the start point itself.
+    fn resumed_slur_start_y(slur: &SlurStartInfo, obstacles: &[(f32, f32)]) -> f32 {
+        if !slur.resumed {
+            return slur.y;
+        }
+        obstacles
+            .iter()
+            .filter(|o| o.0 > slur.x && o.0 <= slur.x + 80.0)
+            .fold(slur.y, |y, o| if slur.is_above { y.min(o.1 - 6.0) } else { y.max(o.1 + 6.0) })
+    }
+
     /// Height at which a slur crossing a system break leaves this system: just
     /// outside the extreme point of the last note it spans (same 6px offset as
     /// a stem-tip anchor), or its start height when it spans no other note.
@@ -12329,22 +12359,33 @@ impl Renderer {
         let height = (distance * 0.15).max(10.0).min(25.0);
         let direction = if is_above { -1.0 } else { 1.0 };
 
-        // Ensure control points are far enough from BOTH endpoints to avoid collisions
-        let default_cy = |y1: f32, y2: f32| {
-            let base_y = if is_above { y1.min(y2) } else { y1.max(y2) };
-            base_y + direction * height
+        let outward = |a: f32, b: f32| if is_above { a.min(b) } else { a.max(b) };
+        // The control points sit `h` beyond a base height: the outer endpoint's
+        // for a gently sloped slur, or the chord line under each control point
+        // for a steep one (ends far apart in height), which then arcs along
+        // the line instead of rising over the higher end.
+        let steep = dy.abs() > 40.0;
+        let bases = |y1: f32, y2: f32, cx1: f32, cx2: f32| -> (f32, f32) {
+            if steep && dx > 1.0 {
+                let line = |x: f32| y1 + (x - x1) / dx * (y2 - y1);
+                (line(cx1), line(cx2))
+            } else {
+                let b = outward(y1, y2);
+                (b, b)
+            }
         };
 
-        // Control-point height needed for the curve to clear every intermediate
-        // obstacle. With both control points at height `cy`,
-        // y(t) = (1-t)^3*y1 + t^3*y2 + 3t(1-t)*cy, and x(t) is monotonic in t,
-        // so for each obstacle we solve x(t) = ox and derive the required cy.
+        // Offset `h` needed for the curve to clear every intermediate
+        // obstacle. With control heights b1 + d·h and b2 + d·h,
+        // y(t) = E(t) + 3t(1-t)·d·h where E(t) is the curve with h = 0, and
+        // x(t) is monotonic in t, so each obstacle gives a required h.
         const SLUR_CLEARANCE: f32 = 4.0;
-        let required_cy = |y1: f32, y2: f32, cx1: f32, cx2: f32| -> Option<f32> {
+        let required_h = |y1: f32, y2: f32, cx1: f32, cx2: f32| -> Option<f32> {
             let mut req: Option<f32> = None;
             if dx <= 1.0 {
                 return None;
             }
+            let (b1, b2) = bases(y1, y2, cx1, cx2);
             for &(ox, oy) in obstacles {
                 if ox <= x1 || ox >= x2 {
                     continue;
@@ -12365,42 +12406,56 @@ impl Renderer {
                 }
                 let t = (0.5 * (lo + hi)).clamp(0.08, 0.92);
                 let u = 1.0 - t;
-                let endpoint_part = u * u * u * y1 + t * t * t * y2;
-                let cy = (oy + direction * SLUR_CLEARANCE - endpoint_part) / (3.0 * u * t);
-                req = Some(match req {
-                    Some(r) if is_above => r.min(cy),
-                    Some(r) => r.max(cy),
-                    None => cy,
-                });
+                let e = u * u * u * y1 + 3.0 * u * u * t * b1 + 3.0 * u * t * t * b2 + t * t * t * y2;
+                let h = (SLUR_CLEARANCE - direction * (e - oy)) / (3.0 * u * t);
+                req = Some(req.map_or(h, |r: f32| r.max(h)));
             }
             req
         };
-        let outward = |a: f32, b: f32| if is_above { a.min(b) } else { a.max(b) };
 
         let (mut y1, mut y2) = (y1, y2);
+        // An obstacle right beside an end and far beyond it (a beam or stem
+        // the slur must pass just before landing on a much lower / higher
+        // note) can't be cleared by arching: the curve would shoot off the
+        // page. Move that end out past it instead.
+        {
+            const NEAR_END_GAP: f32 = 6.0;
+            const FAR_BEYOND: f32 = 20.0;
+            let near = (dx * 0.08).max(30.0);
+            let past = |y: f32, lo: f32, hi: f32| {
+                let need = obstacles
+                    .iter()
+                    .filter(|o| o.0 > lo && o.0 < hi)
+                    .map(|o| o.1 + direction * NEAR_END_GAP)
+                    .fold(y, outward);
+                if (need - y).abs() > FAR_BEYOND { need } else { y }
+            };
+            y1 = past(y1, x1, x1 + near);
+            y2 = past(y2, x2 - near, x2);
+        }
         let mut cx1 = x1 + dx * 0.25;
         let mut cx2 = x2 - dx * 0.25;
-        let mut cy = default_cy(y1, y2);
-        if let Some(req) = required_cy(y1, y2, cx1, cx2) {
-            if outward(req, cy) != cy {
+        let mut h = height;
+        if let Some(req) = required_h(y1, y2, cx1, cx2) {
+            if req > h {
                 // An obstacle pokes through the default arc. Rather than just
                 // pulling the apex up into a narrow spike, flatten the curve
                 // (control points closer to the ends) and lift both endpoints a
                 // little, then solve for the height again.
-                let excess = (req - cy).abs() * 0.75;
+                let excess = (req - h) * 0.75;
                 let lift = (excess * 0.35).min(8.0);
                 y1 += direction * lift;
                 y2 += direction * lift;
                 cx1 = x1 + dx * 0.12;
                 cx2 = x2 - dx * 0.12;
-                cy = default_cy(y1, y2);
-                if let Some(req) = required_cy(y1, y2, cx1, cx2) {
-                    cy = outward(cy, req);
+                if let Some(req) = required_h(y1, y2, cx1, cx2) {
+                    h = h.max(req);
                 }
             }
         }
-        let cy1 = cy;
-        let cy2 = cy;
+        let (b1, b2) = bases(y1, y2, cx1, cx2);
+        let cy1 = b1 + direction * h;
+        let cy2 = b2 + direction * h;
         if std::env::var("SLDBG").is_ok() {
             for &(ox, oy) in obstacles {
                 if ox <= x1 || ox >= x2 { continue; }
@@ -12409,19 +12464,19 @@ impl Renderer {
                     let xt = u*u*u*x1 + 3.0*u*u*t*cx1 + 3.0*u*t*t*cx2 + t*t*t*x2;
                     if xt < ox { lo = t } else { hi = t } }
                 let t = 0.5*(lo+hi); let u = 1.0-t;
-                let yt = u*u*u*y1 + 3.0*u*t*cy + t*t*t*y2;
+                let yt = u*u*u*y1 + 3.0*u*u*t*cy1 + 3.0*u*t*t*cy2 + t*t*t*y2;
                 let pen = if is_above { yt - oy } else { oy - yt };
                 if pen > 0.0 { eprintln!("SLDBG pen={:.1} x1={:.0} x2={:.0} ox={:.0} oy={:.0} t={:.2} above={}", pen, x1, x2, ox, oy, t, is_above); }
             }
         }
 
-        // Record the curve's true vertical extent (sampled; both control points
-        // share height `cy`) so the system slice can be grown to contain it.
+        // Record the curve's true vertical extent (sampled) so the system
+        // slice can be grown to contain it.
         let (mut top, mut bottom) = (y1.min(y2), y1.max(y2));
         for i in 1..16 {
             let t = i as f32 / 16.0;
             let u = 1.0 - t;
-            let yt = u * u * u * y1 + 3.0 * u * t * cy + t * t * t * y2;
+            let yt = u * u * u * y1 + 3.0 * u * u * t * cy1 + 3.0 * u * t * t * cy2 + t * t * t * y2;
             top = top.min(yt);
             bottom = bottom.max(yt);
         }
@@ -12432,7 +12487,8 @@ impl Renderer {
             y1,
             cx1,
             cx2,
-            cy,
+            cy1,
+            cy2,
             x2,
             y2,
             top: top - half_stroke,

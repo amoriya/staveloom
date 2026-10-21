@@ -13,6 +13,7 @@ impl super::Renderer {
         let mut result = MeasureAnalysisResult {
             max_measures,
             raw_widths: vec![self.measure_width; max_measures],
+            fixed_widths: vec![0.0; max_measures],
             system_start_extra_widths: vec![0.0; max_measures],
             spacings: Vec::with_capacity(max_measures),
             total_durs: vec![0; max_measures],
@@ -185,6 +186,26 @@ impl super::Renderer {
                                     for lyric in &n.lyrics {
                                         entry.lyric_width =
                                             entry.lyric_width.max(self.estimate_lyric_width(lyric));
+                                    }
+
+                                    if let Some(pitch) = n.pitch.as_ref().filter(|_| !n.rest) {
+                                        let clef = current_clefs_sim
+                                            .get(&n.staff.unwrap_or(1))
+                                            .cloned()
+                                            .unwrap_or_else(|| crate::models::Clef {
+                                                number: 1,
+                                                sign: "G".to_string(),
+                                                line: Some(2),
+                                                ..Default::default()
+                                            });
+                                        if clef.sign == "G" || clef.sign == "F" || clef.sign == "C" {
+                                            // A ledger line from a full space outside.
+                                            let y = self.pitch_to_y(pitch, &clef, 0.0);
+                                            let space = self.staff_line_distance;
+                                            if y < -space + 1.0 || y > 5.0 * space - 1.0 {
+                                                entry.ledger = true;
+                                            }
+                                        }
                                     }
 
                                     if !n.is_chord {
@@ -470,15 +491,46 @@ impl super::Renderer {
 
                 let gap = match self.spacing_strategy {
                     crate::renderer::SpacingStrategy::Elastic => {
-                        (16.0 * (dur_to_next / 10080.0).powf(0.6)).max(1.5)
+                        // Onset-to-onset distance follows the duration
+                        // (quarter = 35px, scaled by duration^0.6) unless the
+                        // notes would collide (this note's head, flags and dots
+                        // plus the next one's accidentals / grace notes) or
+                        // their lyrics would: then the minimum that clears them.
+                        const QUARTER_SPACE: f32 = 35.0;
+                        const MIN_GAP: f32 = 6.0;
+                        let next = onsets.get(i + 1).map(|(_, n)| n);
+                        let next_prefix = next.map_or(0.0, |n| n.prefix);
+                        let occupied = self.note_head_width + needs.suffix;
+                        let duration_space = QUARTER_SPACE * (dur_to_next / 10080.0).powf(0.6);
+                        let collision_space = occupied + next_prefix + MIN_GAP;
+                        let lyric_space = match next {
+                            Some(n) if needs.lyric_width > 0.0 || n.lyric_width > 0.0 => {
+                                (needs.lyric_width + n.lyric_width) * 0.5 + 4.0
+                            }
+                            None if needs.lyric_width > 0.0 => needs.lyric_width * 0.5 + 4.0,
+                            _ => 0.0,
+                        };
+                        let space = duration_space.max(collision_space).max(lyric_space);
+                        (space - occupied - next_prefix).max(0.0)
                     }
                     crate::renderer::SpacingStrategy::Compact => {
-                        if i + 1 < onsets.len() {
-                            let next_needs = &onsets[i + 1].1;
-                            let lyric_gap = ((needs.lyric_width + next_needs.lyric_width) * 0.5
-                                - 12.0)
-                                .max(0.0);
-                            12.0 + lyric_gap
+                        // As tight as the notes allow: this note's head, flags
+                        // and dots, a small gap, then the next one's accidentals
+                        // / grace notes. Ledger lines (wider than a notehead)
+                        // of two neighbours and lyrics keep apart too.
+                        const MIN_GAP: f32 = 5.0;
+                        const LEDGER_HALF: f32 = 10.0; // see draw_ledger_lines
+                        const LEDGER_GAP: f32 = 3.0;
+                        if let Some(next) = onsets.get(i + 1).map(|(_, n)| n) {
+                            let occupied = self.note_head_width + needs.suffix;
+                            let mut space = occupied + next.prefix + MIN_GAP;
+                            if needs.ledger && next.ledger {
+                                space = space.max(2.0 * LEDGER_HALF + LEDGER_GAP);
+                            }
+                            if needs.lyric_width > 0.0 || next.lyric_width > 0.0 {
+                                space = space.max((needs.lyric_width + next.lyric_width) * 0.5 + 4.0);
+                            }
+                            (space - occupied - next.prefix).max(0.0)
                         } else {
                             if needs.lyric_width > 0.0 { 4.0 } else { 0.0 }
                         }
@@ -509,6 +561,8 @@ impl super::Renderer {
             result.raw_widths[m_idx] =
                 (self.measure_start_padding + initial_attr_w + total_content_w)
                     .max(self.measure_width);
+            result.fixed_widths[m_idx] =
+                (self.measure_start_padding + initial_attr_w).min(result.raw_widths[m_idx]);
             result.system_start_extra_widths[m_idx] =
                 (system_start_attr_w - initial_attr_w).max(0.0);
             result
@@ -529,6 +583,9 @@ impl super::Renderer {
 pub(crate) struct MeasureAnalysisResult {
     pub max_measures: usize,
     pub raw_widths: Vec<f32>,
+    /// Part of each raw width that doesn't stretch when a system is
+    /// justified: the start padding and the measure's own attributes.
+    pub fixed_widths: Vec<f32>,
     pub system_start_extra_widths: Vec<f32>,
     pub spacings: Vec<crate::renderer::types::MeasureSpacing>,
     pub total_durs: Vec<i32>,

@@ -37,3 +37,7 @@ path = "../../tests/midi_roundtrip_test.rs"
 [[test]]
 name = "w3c_visual_test"
 path = "../../tests/w3c_visual_test.rs"
+
+[[test]]
+name = "spacing_test"
+path = "../../tests/spacing_test.rs"
