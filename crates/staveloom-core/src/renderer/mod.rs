@@ -245,6 +245,8 @@ struct DeferredPedal {
     is_terminal: bool,
     glyph: String,
     is_below: bool,
+    /// Top of the part the pedal belongs to.
+    part_y: f32,
 }
 
 impl Default for Renderer {
@@ -901,6 +903,9 @@ impl Renderer {
             // part state.
             let part_states_at_system_start = part_states.clone();
             let mut extra_staff_gap: HashMap<String, f32> = HashMap::new();
+            // Extra space above a part whose upper neighbour's late-drawn
+            // elements (pedals, slurs, directions) reach into it.
+            let mut extra_part_gap: HashMap<String, f32> = HashMap::new();
             let mut layout_attempt = 0;
             loop {
             let mut sys_doc = Document::new();
@@ -1728,7 +1733,8 @@ impl Renderer {
                             }
                         }
                     }
-                    resolved_y = prev_y + required_push;
+                    resolved_y =
+                        prev_y + required_push + extra_part_gap.get(&id).copied().unwrap_or(0.0);
                 } else {
                     // First part starts at total_system_height
                     resolved_y = total_system_height + min_rel.min(0.0).abs();
@@ -5246,9 +5252,13 @@ impl Renderer {
                     &part_staff_distances,
                     system_render_y,
                 );
-                if !needed.is_empty() {
+                let part_needed = self.part_overlaps(score, &part_y_offsets, system_render_y);
+                if !needed.is_empty() || !part_needed.is_empty() {
                     for (id, extra) in needed {
                         *extra_staff_gap.entry(id).or_insert(0.0) += extra;
+                    }
+                    for (id, extra) in part_needed {
+                        *extra_part_gap.entry(id).or_insert(0.0) += extra;
                     }
                     part_states = part_states_at_system_start.clone();
                     layout_attempt += 1;
@@ -6394,6 +6404,7 @@ impl Renderer {
             is_terminal,
             glyph: glyph.to_string(),
             is_below,
+            part_y: self.current_part_y.get(),
         });
         doc
     }
@@ -7531,6 +7542,77 @@ impl Renderer {
         result
     }
 
+    /// How far each part must move down so that what its upper neighbour
+    /// drew late (pedal lines, slurs, directions, beamed stems) clears its
+    /// staff and the notes, slurs and directions above it.
+    fn part_overlaps(
+        &self,
+        score: &Score,
+        part_y_offsets: &HashMap<String, f32>,
+        system_render_y: f32,
+    ) -> Vec<(String, f32)> {
+        const MARGIN: f32 = 8.0;
+        let ids: Vec<&String> = score
+            .part_list
+            .iter()
+            .filter_map(|item| match item {
+                PartListItem::Part { id, .. } if part_y_offsets.contains_key(id) => Some(id),
+                _ => None,
+            })
+            .collect();
+        let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+        let no_active = HashMap::new();
+        let notes = self.placed_notes.borrow();
+        let slurs = self.placed_slurs.borrow();
+        let items = self.gap_items.borrow();
+        let pedals = self.deferred_pedals.borrow();
+        let mut result = Vec::new();
+        for pair in ids.windows(2) {
+            let py = system_render_y + part_y_offsets[pair[0]];
+            let qy = system_render_y + part_y_offsets[pair[1]];
+            // (x1, x2, bottom) of the upper part's elements.
+            let mut upper: Vec<(f32, f32, f32)> = Vec::new();
+            for p in pedals.iter().filter(|p| near(p.part_y, py) && p.is_below) {
+                let y = self.pedal_y_clear_of_wedges(p.y, p.x1, p.x2, p.is_below, &no_active);
+                upper.push((p.x1, p.x2, y + 10.0));
+            }
+            upper.extend(slurs.iter().filter(|sl| near(sl.part_y, py)).map(|sl| {
+                let (a, b) = sl.x_range();
+                (a, b, sl.bottom)
+            }));
+            upper.extend(items.iter().filter(|it| near(it.part_y, py)).map(|it| (it.x1, it.x2, it.bottom)));
+            upper.extend(notes.iter().filter(|pn| near(pn.part_y, py)).map(|pn| {
+                let bottom = pn.stem.map_or(pn.bottom, |(_, tip, _)| pn.bottom.max(tip));
+                (pn.x - 6.0, pn.x + 6.0, bottom)
+            }));
+            // (x1, x2, top) of the lower part's elements.
+            let mut lower: Vec<(f32, f32, f32)> = Vec::new();
+            lower.extend(slurs.iter().filter(|sl| near(sl.part_y, qy)).map(|sl| {
+                let (a, b) = sl.x_range();
+                (a, b, sl.top)
+            }));
+            lower.extend(items.iter().filter(|it| near(it.part_y, qy)).map(|it| (it.x1, it.x2, it.top)));
+            lower.extend(notes.iter().filter(|pn| near(pn.part_y, qy)).map(|pn| {
+                let top = pn.stem.map_or(pn.top, |(_, tip, _)| pn.top.min(tip));
+                (pn.x - 6.0, pn.x + 6.0, top)
+            }));
+            let mut extra: f32 = 0.0;
+            for &(a1, a2, bottom) in &upper {
+                // The lower part's top staff line runs the whole width.
+                extra = extra.max(bottom + MARGIN - qy);
+                for &(b1, b2, top) in &lower {
+                    if a1 < b2 && a2 > b1 {
+                        extra = extra.max(bottom + MARGIN - top);
+                    }
+                }
+            }
+            if extra > 0.5 {
+                result.push((pair[1].clone(), extra.ceil()));
+            }
+        }
+        result
+    }
+
     /// Pushes a pedal line spanning x1..x2 clear of the hairpins under it:
     /// those already drawn in this system and those still running (which only
     /// get drawn at their stop, possibly on a later system). The pedal glyph
@@ -8140,6 +8222,47 @@ impl Renderer {
                 );
                 doc = new_doc;
             }
+            // Exporters may also put the trill itself (mark and wavy line) on
+            // the first hidden note of the written-out trill, under the
+            // visible note: draw it where that note would be, like slurs.
+            // Only when it starts a wavy line and trills are all it carries; a
+            // lone trill mark on a hidden note duplicates the visible one's.
+            let ornaments: Vec<&crate::models::Ornament> = effective_chord_group
+                .iter()
+                .flat_map(|n| n.notations.iter())
+                .filter_map(|nt| match nt {
+                    Notation::Ornaments(orns) => Some(orns.iter()),
+                    _ => None,
+                })
+                .flatten()
+                .collect();
+            let trill_on_hidden = !hidden_ys.is_empty()
+                && ornaments.iter().any(|o| {
+                    matches!(o, crate::models::Ornament::WavyLine { wavy_type, .. } if wavy_type == "start")
+                })
+                && ornaments.iter().all(|o| {
+                    matches!(
+                        o,
+                        crate::models::Ornament::TrillMark
+                            | crate::models::Ornament::WavyLine { .. }
+                    )
+                });
+            if trill_on_hidden {
+                let top = hidden_ys.iter().copied().fold(f32::MAX, f32::min) - 5.0;
+                let bottom = hidden_ys.iter().copied().fold(f32::MIN, f32::max) + 5.0;
+                let (new_doc, _, _) = self.process_ornaments(
+                    doc,
+                    &effective_chord_group,
+                    note_x,
+                    top,
+                    bottom,
+                    None,
+                    active_tremolos,
+                    active_wavy_lines,
+                    staff_y_offset,
+                );
+                doc = new_doc;
+            }
             for n in &effective_chord_group {
                 for notation in &n.notations {
                     match notation {
@@ -8151,6 +8274,28 @@ impl Renderer {
                         Notation::Tied { note_type } if note_type == "stop" => {
                             if let Some(p) = &n.pitch {
                                 active_ties.remove(&(p.step.clone(), p.octave));
+                            }
+                        }
+                        // A trill's wavy line may end on a hidden note of the
+                        // written-out trill: end it there, as the stop on a
+                        // visible note does. (Starts are handled below.)
+                        Notation::Ornaments(orns) if !trill_on_hidden => {
+                            for o in orns {
+                                let crate::models::Ornament::WavyLine {
+                                    wavy_type,
+                                    number,
+                                    relative_x,
+                                } = o
+                                else {
+                                    continue;
+                                };
+                                if wavy_type != "stop" {
+                                    continue;
+                                }
+                                if let Some(info) = active_wavy_lines.remove(number) {
+                                    let end_x = note_x + relative_x.unwrap_or(20.0);
+                                    doc = self.draw_wavy_line(doc, info.x, info.y, end_x, info.y);
+                                }
                             }
                         }
                         _ => {}
@@ -11790,8 +11935,11 @@ impl Renderer {
     /// groups just drawn.
     fn apply_beam_tips_to_placed_notes(&self, beam_tips: &[BeamedStemTip]) {
         let mut placed = self.placed_notes.borrow_mut();
+        // The beams just drawn belong to the current part (another part's
+        // staff of the same number may have a stem at the same x).
+        let part_y = self.current_part_y.get();
         for b in beam_tips {
-            for pn in placed.iter_mut() {
+            for pn in placed.iter_mut().filter(|pn| pn.part_y == part_y) {
                 if let Some((sx, tip, _)) = pn.stem.as_mut() {
                     if pn.staff == b.staff
                         && (*sx - b.orig_x).abs() < 0.5
@@ -11907,9 +12055,36 @@ impl Renderer {
                 // under its path, and would drag the curve right past them.
                 let toward_up = end_staff < slur.staff;
                 obstacles.retain(|o| if toward_up { o.1 <= slur.y } else { o.1 >= slur.y });
-                obstacles.extend(self.cross_staff_slur_obstacles(
-                    end_staff, slur.x, end_x, end_top, end_bottom, slur.is_above,
-                ));
+                // End-staff notes phrased under a slur of their own that is
+                // over before this one reaches that staff (after its last note
+                // on the start staff) belong to the other hand's phrase played
+                // meanwhile: they lie beyond its path, not under it.
+                let handover = slur
+                    .obstacles
+                    .iter()
+                    .map(|o| o.0)
+                    .filter(|&ox| ox < end_x)
+                    .fold(slur.x, f32::max);
+                let part_y = self.current_part_y.get();
+                let own_phrases: Vec<(f32, f32)> = self
+                    .placed_slurs
+                    .borrow()
+                    .iter()
+                    .filter(|sl| {
+                        sl.staff == end_staff
+                            && !sl.cross_staff
+                            && (sl.part_y - part_y).abs() < 0.5
+                            && sl.x_range().1 < handover
+                    })
+                    .map(|sl| sl.x_range())
+                    .collect();
+                obstacles.extend(
+                    self.cross_staff_slur_obstacles(
+                        end_staff, slur.x, end_x, end_top, end_bottom, slur.is_above,
+                    )
+                    .into_iter()
+                    .filter(|o| !own_phrases.iter().any(|&(a, b)| o.0 >= a - 2.0 && o.0 <= b + 2.0)),
+                );
             }
             doc = self.draw_slur(
                 doc, slur.x, slur.y, end_x, end_y, slur.is_above, &obstacles, slur.staff,
