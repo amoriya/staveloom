@@ -7427,8 +7427,9 @@ impl Renderer {
                 // A slur reaching into the gap must also clear the other
                 // staff's noteheads and stems hanging into it.
                 for pn in self.placed_notes.borrow().iter().filter(|pn| pn.part_y == part_start_y) {
+                    // (Not a cross-staff beam's stem: its length follows the gap.)
                     let stem_tip = |up: bool| match pn.stem {
-                        Some((sx, tip, is_up)) if is_up == up => Some((sx, tip)),
+                        Some((sx, tip, is_up)) if is_up == up && !pn.cross_beam => Some((sx, tip)),
                         _ => None,
                     };
                     if pn.staff == s && pn.top > upper_top - 150.0 && pn.bottom < lower_top {
@@ -11668,9 +11669,9 @@ impl Renderer {
             let stem_x = stem.map(|s| s.x).unwrap_or(x);
             let notehead_x = note_xs.first().copied().unwrap_or(x);
             {
-                self.apply_beam_tips_to_placed_notes(beam_tips);
-                let mut placed = self.placed_notes.borrow_mut();
-                placed.push(PlacedNote {
+                // Record this note first: when it ends a beam group, the beam
+                // just drawn sets its stem too.
+                self.placed_notes.borrow_mut().push(PlacedNote {
                     part_y: self.current_part_y.get(),
                     staff: first_note.staff.unwrap_or(1),
                     x: notehead_x,
@@ -11679,6 +11680,7 @@ impl Renderer {
                     stem: stem.map(|s| (s.x, s.y_tip, s.is_up)),
                     cross_beam: false,
                 });
+                self.apply_beam_tips_to_placed_notes(beam_tips);
             }
 
             // Slur endpoints always anchor to the plain notehead position (not a
@@ -12001,10 +12003,15 @@ impl Renderer {
                     }
                 }
             }
+            // The notes drawn at an end (with stems as their beam finally set
+            // them); the extent recorded with the tuplet's start or stop note
+            // predates the beam, so it only stands in when none was found.
             let end_extreme = |x: f32, own: f32| {
                 pts.iter()
                     .filter(|p| (p.0 - x).abs() < 8.0)
-                    .fold(own, |acc, p| outer(acc, p.1))
+                    .map(|p| p.1)
+                    .reduce(outer)
+                    .unwrap_or(own)
             };
             let own1 = if s.is_above { s.top } else { s.bottom };
             let own2 = if s.is_above { t.top2 } else { t.bottom2 };
@@ -12644,6 +12651,9 @@ impl Renderer {
         }
 
         // 2. Draw beams for each level (1 to 8)
+        // Every beam segment drawn, as (x1, x2, offset from the primary beam),
+        // so each stem can reach the farthest beam at its x (see below).
+        let mut beam_spans: Vec<(f32, f32, f32)> = Vec::new();
         for beam_num in 1..=8 {
             let mut start_idx: Option<usize> = None;
             for i in 0..pts.len() {
@@ -12688,6 +12698,7 @@ impl Renderer {
                                         .line_to((x1, draw_y1 + beam_thickness))
                                         .close(),
                                 );
+                                beam_spans.push((x1.min(x2), x1.max(x2), offset_y));
                                 doc = doc.add(beam_path);
                                 start_idx = None;
                             }
@@ -12732,6 +12743,7 @@ impl Renderer {
                                     .line_to((x1, draw_y1 + beam_thickness))
                                     .close(),
                             );
+                            beam_spans.push((x1.min(x2), x1.max(x2), offset_y));
                             doc = doc.add(beam_path);
                         }
                     }
@@ -12766,6 +12778,7 @@ impl Renderer {
                                 .line_to((x1, draw_y1 + beam_thickness))
                                 .close(),
                         );
+                        beam_spans.push((x1.min(x2), x1.max(x2), offset_y));
                         doc = doc.add(beam_path);
                         start_idx = None;
                     }
@@ -12801,6 +12814,7 @@ impl Renderer {
                         .line_to((x1, draw_y1 + beam_thickness))
                         .close(),
                 );
+                beam_spans.push((x1.min(x2), x1.max(x2), offset_y));
                 doc = doc.add(beam_path);
             }
         }
@@ -12813,6 +12827,15 @@ impl Renderer {
         };
         for (i, (s_item, _)) in pts.iter().enumerate() {
             let stem_tip_y = ref_y1 + (s_item.x - ref_x1) * slope;
+            // In a beam mixing stem directions (across staves), the secondary
+            // beams lie on the tip side of the stems pointing their way: those
+            // stems run on through them to the farthest one.
+            let reach = beam_spans
+                .iter()
+                .filter(|&&(x1, x2, _)| s_item.x >= x1 - 0.5 && s_item.x <= x2 + 0.5)
+                .map(|&(_, _, off)| off)
+                .fold(0.0_f32, |acc, off| if s_item.is_up { acc.min(off) } else { acc.max(off) });
+            let drawn_tip_y = stem_tip_y + reach;
             self.beamed_stem_tips.borrow_mut().push(BeamedStemTip {
                 orig_x: orig_xs[i],
                 x: s_item.x,
@@ -12828,7 +12851,7 @@ impl Renderer {
                     .set("x1", s_item.x)
                     .set("y1", s_item.y_start)
                     .set("x2", s_item.x)
-                    .set("y2", stem_tip_y)
+                    .set("y2", drawn_tip_y)
                     .set("stroke", "black")
                     .set("stroke-width", stroke_w),
             );
