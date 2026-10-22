@@ -686,11 +686,12 @@ impl MidiEngine {
                                                 _ => {}
                                             }
                                         }
-                                        if trailing && run > 0 {
-                                            // The preceding note keeps at least its first
-                                            // quarter.
-                                            let room = p_tick.saturating_sub(last_main_onset) * 3 / 4;
-                                            trailing_grace_unit = (midi_tpq / 8).min(room / run).max(1);
+                                        // The preceding note keeps at least its first
+                                        // quarter; with no room left (e.g. no preceding
+                                        // note) the grace notes play from p_tick instead.
+                                        let room = p_tick.saturating_sub(last_main_onset) * 3 / 4;
+                                        if trailing && run > 0 && room >= run {
+                                            trailing_grace_unit = (midi_tpq / 8).min(room / run);
                                             trailing_grace_offset = run * trailing_grace_unit;
                                             let cut = p_tick - trailing_grace_offset;
                                             for &i in &last_main_offs {
