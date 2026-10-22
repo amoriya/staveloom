@@ -90,7 +90,7 @@ Staveloom은 Rust로 만들어진 MusicXML 파싱 및 SVG 렌더링 엔진으로
   - `play()` async화: `await this._ctx.resume()` 후 `seq.play()` 호출. Suspended 컨텍스트에서 재생 시 무음 방지.
   - `touchstart` (capture, passive) 리스너: 화면 터치마다 AudioContext 재개 시도. 백그라운드 전환 후 iOS 재-suspension 대응.
   - `visibilitychange` 리스너: 탭 복귀 시 `unlockAudio()` 시도.
-- **2줄 툴바**: 모바일(≤768px)에서 `.controller-inner { flex-wrap: wrap }`. 1줄: 시간 + 재생 버튼. 2줄: 볼륨/줌/다운로드(`space-around`). 구분선 숨김.
+- **2줄 툴바**: 모바일(≤768px)에서 `.controller-inner { flex-wrap: wrap }`. 1줄: 시간 + 재생 버튼. 2줄: 볼륨/다운로드(`space-around`). 구분선 숨김.
 - **Safe Area 지원**: `viewport-fit=cover` + `env(safe-area-inset-bottom)` + `100dvh`. iOS Safari URL bar 동적 대응 및 홈 인디케이터 위에 툴바 배치.
 
 ### 6. 검증 및 리포팅 시스템

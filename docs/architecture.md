@@ -395,7 +395,7 @@ web/
 // 상태
 state = {
   filename, rawFileBytes, midiBytes, svgContent, systems, metadata,
-  instruments, parts, currentZoom, isPlaying, isScrubbing,
+  instruments, parts, isPlaying, isScrubbing,
   currentSystemIndex, currentLineY,
   mobileUserOverridden, preMobileWidthValue,  // 모바일 자동 감지용
 }

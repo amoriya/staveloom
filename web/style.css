@@ -532,11 +532,17 @@ input[type="range"]::-webkit-slider-thumb:hover {
     ); /* offset for floating player + iOS home indicator */
 }
 
+/* The score fills the viewport's width: the page is rendered wider than it
+   (DESKTOP_RENDER_SCALE / MOBILE_RENDER_SCALE in player.js) and fitted to it,
+   so the container must not size itself to the SVG's own width. The empty
+   state keeps its compact card. */
 #score-canvas-container {
     margin: 0 auto;
+    width: 100%;
+}
+
+#score-canvas-container:has(.empty-state) {
     width: fit-content;
-    transform-origin: top center;
-    transition: transform 0.2s ease;
 }
 
 #score-canvas {
@@ -794,21 +800,6 @@ input[type="range"]::-webkit-slider-thumb:hover {
     width: 70px;
 }
 
-/* Zoom indicators */
-.zoom-container {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-#zoom-level {
-    font-size: 12px;
-    font-weight: 700;
-    color: var(--text-secondary);
-    min-width: 40px;
-    text-align: center;
-}
-
 /* Download containers */
 .download-container {
     display: flex;
@@ -833,7 +824,6 @@ input[type="range"]::-webkit-slider-thumb:hover {
 #score-viewport.horizontal-mode #score-canvas-container {
     margin: 0;
     width: max-content;
-    transform-origin: center left;
 }
 
 #score-viewport.horizontal-mode #score-canvas {
@@ -949,17 +939,10 @@ html.sidebar-overlay #score-viewport {
     padding-top: 64px;
 }
 
-/* Phones and tablets (<html class="is-mobile">): the score fills the screen
-   width. The page is rendered wider than the screen (MOBILE_RENDER_SCALE in
-   player.js) and fitted to it, so the container must not size itself to the
-   SVG's own width. */
+/* Phones (<html class="is-mobile">): the score fills the screen width. */
 html.is-mobile #score-viewport {
     padding-left: 4px;
     padding-right: 4px;
-}
-
-html.is-mobile #score-canvas-container {
-    width: 100%;
 }
 
 html.is-mobile #score-canvas {
@@ -978,15 +961,15 @@ html.is-mobile #score-canvas {
     #floating-controller {
         width: calc(100% - 24px);
         padding: 10px 14px 14px;
-        /* env() handles home indicator; max() ensures minimum clearance */
+        /* env() lifts the bar above the home indicator; max() ensures minimum
+           clearance. The bar already sits above it, so its padding must not
+           add the inset again. */
         bottom: max(14px, calc(env(safe-area-inset-bottom, 0px) + 8px));
-        /* extra padding at the bottom so content clears the home indicator */
-        padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
     }
 
     /* ── 2-row toolbar layout ───────────────────────────────────────────────── */
     /* Row 1: [time] ←→ [rewind + play]                                         */
-    /* Row 2: [volume] [zoom] [downloads]  (space-around)                        */
+    /* Row 2: [volume] [downloads]  (space-around)                               */
     .controller-inner {
         flex-wrap: wrap;
         row-gap: 10px;
@@ -1021,11 +1004,6 @@ html.is-mobile #score-canvas {
         width: 54px;
     }
 
-    #zoom-level {
-        min-width: 30px;
-        font-size: 11px;
-    }
-
     /* Sidebar: also respect dynamic viewport height */
     #sidebar {
         height: 100vh;
@@ -1058,45 +1036,51 @@ html.is-mobile #score-canvas {
     background: var(--text-muted);
 }
 
-/* ── Mobile, while playing: one compact row ───────────────────────────────── */
-/* Only the timeline and the pause button stay (<html class="is-mobile        */
-/* is-playing">, set in index.html / player.js); pausing restores the bar.  */
-html.is-mobile.is-playing #floating-controller {
+/* ── While playing: one compact row ───────────────────────────────────────── */
+/* Only the timeline, the time and the pause button stay (<html              */
+/* class="is-playing">, set in player.js); pausing restores the bar.         */
+html.is-playing #floating-controller {
     flex-direction: row;
     align-items: center;
     gap: 12px;
     padding: 4px 6px 4px 16px;
-    padding-bottom: calc(4px + env(safe-area-inset-bottom, 0px));
     border-radius: 22px;
 }
 
-html.is-mobile.is-playing .timeline-container {
+html.is-playing .timeline-container {
     flex: 1;
     width: auto;
 }
 
-html.is-mobile.is-playing .controller-inner {
+html.is-playing .controller-inner {
     flex: 0 0 auto;
     flex-wrap: nowrap;
-    gap: 0;
+    gap: 8px;
 }
 
-html.is-mobile.is-playing .time-display,
-html.is-mobile.is-playing .utility-controls,
-html.is-mobile.is-playing #rewind-btn {
+html.is-playing .time-display {
+    flex: 0 0 auto;
+    min-width: 0;
+    gap: 3px;
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+html.is-playing .utility-controls,
+html.is-playing #rewind-btn {
     display: none;
 }
 
-html.is-mobile.is-playing .playback-controls {
+html.is-playing .playback-controls {
     flex: 0 0 auto;
 }
 
-html.is-mobile.is-playing .play-pulse-btn {
+html.is-playing .play-pulse-btn {
     width: 32px;
     height: 32px;
 }
 
-html.is-mobile.is-playing .play-pulse-btn svg {
+html.is-playing .play-pulse-btn svg {
     width: 16px;
     height: 16px;
 }

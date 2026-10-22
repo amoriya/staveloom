@@ -30,7 +30,6 @@
     metadata: null,
     parts: [],
     instruments: [],
-    currentZoom: 100,
     isPlaying: false,
     isScrubbing: false,
     // Seek just requested from the timeline: { time, until }. The player only
@@ -53,6 +52,8 @@
   // is fitted to the screen width, so it shows scaled down by the same factor
   // (more measures per line).
   const MOBILE_RENDER_SCALE = 2;
+  // Desktop's initial render width, as a multiple of the score area's width.
+  const DESKTOP_RENDER_SCALE = 1.5;
 
   let animFrameId = null;
 
@@ -78,9 +79,6 @@
   const widthControlGroup = document.getElementById("width-control-group");
 
   const scoreViewport = document.getElementById("score-viewport");
-  const scoreCanvasContainer = document.getElementById(
-    "score-canvas-container",
-  );
   const scoreCanvas = document.getElementById("score-canvas");
 
   const floatingController = document.getElementById("floating-controller");
@@ -99,9 +97,6 @@
   const volMuteIcon = document.getElementById("vol-mute-icon");
   const volumeSlider = document.getElementById("volume-slider");
 
-  const zoomInBtn = document.getElementById("zoom-in-btn");
-  const zoomOutBtn = document.getElementById("zoom-out-btn");
-  const zoomLevelEl = document.getElementById("zoom-level");
 
   const downloadSvgBtn = document.getElementById("download-svg-btn");
   const downloadMidiBtn = document.getElementById("download-midi-btn");
@@ -118,13 +113,16 @@
       .init()
       .catch((e) => console.warn("SoundFontLoader init failed:", e));
 
+    if (!IS_MOBILE_DEVICE) applyDesktopFitWidth();
     applyAutoMobileDetect(true);
-    // On a mobile device the render width follows the screen: when rotating
-    // changes it, render the score again (once the resizing settles).
+    // The render width follows the score area (desktop) or the screen
+    // (mobile): when resizing the window or rotating the device changes it,
+    // render the score again (once the resizing settles).
     let resizeTimer = null;
     window.addEventListener("resize", () => {
       if (state.mobileUserOverridden) return;
       const before = widthSlider.value;
+      if (!IS_MOBILE_DEVICE) applyDesktopFitWidth();
       applyAutoMobileDetect(true);
       if (widthSlider.value === before || !state.rawFileBytes) return;
       clearTimeout(resizeTimer);
@@ -146,6 +144,31 @@
     syncMobileDependentControls(snapWidth);
   }
 
+  // Desktop starts at DESKTOP_RENDER_SCALE × the width of the score area (the
+  // viewport's content box minus the canvas card's padding), rounded down to
+  // the slider's step. The score is fitted to that area, so it shows scaled
+  // down by the same factor.
+  function applyDesktopFitWidth() {
+    const vs = getComputedStyle(scoreViewport);
+    const cs = getComputedStyle(scoreCanvas);
+    const avail =
+      scoreViewport.clientWidth -
+      parseFloat(vs.paddingLeft) -
+      parseFloat(vs.paddingRight) -
+      parseFloat(cs.paddingLeft) -
+      parseFloat(cs.paddingRight);
+    const target = avail * DESKTOP_RENDER_SCALE;
+    const min = parseInt(widthSlider.min);
+    const max = parseInt(widthSlider.max);
+    const step = parseInt(widthSlider.step);
+    const fitted = Math.min(
+      Math.max(min + Math.floor((target - min) / step) * step, min),
+      max,
+    );
+    widthSlider.value = fitted;
+    widthVal.innerText = `${fitted}px`;
+  }
+
   // Keep the elastic toggle and width slider in sync with the mobile toggle's
   // current state. Snaps the width to MOBILE_RENDER_SCALE × the screen width
   // on the off→on transition and restores it back on the on→off transition,
@@ -159,10 +182,10 @@
         state.preMobileWidthValue = widthSlider.value;
       }
       // Follows the screen width, so a rotated device renders to its new
-      // width (capped by the width slider's 2000px).
+      // width (capped by the width slider's maximum).
       const snapped = Math.min(
         Math.max(320, window.innerWidth) * MOBILE_RENDER_SCALE,
-        2000,
+        parseInt(widthSlider.max),
       );
       widthSlider.value = snapped;
       widthVal.innerText = `${snapped}px`;
@@ -230,7 +253,6 @@
 
     horizontalToggle.addEventListener("change", () => {
       widthControlGroup.classList.toggle("hidden", horizontalToggle.checked);
-      state.currentZoom = 100;
       triggerRender();
     });
 
@@ -276,8 +298,6 @@
       updateVolumeUI();
     });
 
-    zoomInBtn.addEventListener("click", () => adjustZoom(10));
-    zoomOutBtn.addEventListener("click", () => adjustZoom(-10));
 
     downloadSvgBtn.addEventListener("click", downloadSVG);
     downloadMidiBtn.addEventListener("click", downloadMIDI);
@@ -485,7 +505,6 @@
         });
       }
 
-      updateZoomUI();
       floatingController.classList.remove("hidden");
       // Reset timeline display to 0:00 / 0:00 before MIDI loads
       timelineScrubber.value = 0;
@@ -737,7 +756,7 @@
 
   // ── Playback Controls ────────────────────────────────────────────────────
   // Playing state, mirrored on <html class="is-playing"> so the stylesheet
-  // can shrink the toolbar on mobile while the score plays.
+  // can shrink the toolbar while the score plays.
   function setPlaying(playing) {
     state.isPlaying = playing;
     document.documentElement.classList.toggle("is-playing", playing);
@@ -804,18 +823,6 @@
     const muted = vol === 0;
     volUpIcon.classList.toggle("hidden", muted);
     volMuteIcon.classList.toggle("hidden", !muted);
-  }
-
-  // ── Zoom ─────────────────────────────────────────────────────────────────
-  function adjustZoom(delta) {
-    state.currentZoom = Math.min(250, Math.max(50, state.currentZoom + delta));
-    updateZoomUI();
-    updateCursorPosition();
-  }
-
-  function updateZoomUI() {
-    zoomLevelEl.innerText = `${state.currentZoom}%`;
-    scoreCanvasContainer.style.transform = `scale(${state.currentZoom / 100})`;
   }
 
   // ── Downloads ────────────────────────────────────────────────────────────
