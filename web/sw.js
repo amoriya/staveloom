@@ -6,7 +6,7 @@
 //              requests cache-first; dynamic caching on network hit
 //              ignoreSearch: true so versioned URLs (?v=N) match cached assets
 
-const CACHE_VERSION = "v48";
+const CACHE_VERSION = "v49";
 const CACHE_NAME = `staveloom-player-${CACHE_VERSION}`;
 
 // Static assets to precache on install.

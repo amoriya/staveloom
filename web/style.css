@@ -765,8 +765,8 @@ input[type="range"]::-webkit-slider-thumb:hover {
     background: var(--accent-gradient);
     border: none;
     color: white;
-    width: 48px;
-    height: 48px;
+    width: 32px;
+    height: 32px;
     border-radius: 50%;
     display: flex;
     align-items: center;
@@ -783,6 +783,11 @@ input[type="range"]::-webkit-slider-thumb:hover {
 
 .play-pulse-btn:active {
     transform: scale(0.96);
+}
+
+.play-pulse-btn svg {
+    width: 16px;
+    height: 16px;
 }
 
 .playback-controls #play-btn #play-icon {
@@ -951,57 +956,72 @@ html.is-mobile #score-canvas {
 }
 
 @media (max-width: 768px) {
-    /* Push score content down — account for toggle button + 2-row controller + safe area */
+    /* Keep the end of the score clear of the controller */
     #score-viewport {
-        /* 2-row controller (~150px) + bottom gap + home indicator */
-        padding-bottom: calc(180px + env(safe-area-inset-bottom, 0px));
+        /* controller (~90px, ~140px when the controls wrap) + bottom gap +
+           home indicator */
+        padding-bottom: calc(160px + env(safe-area-inset-bottom, 0px));
     }
 
     /* Floating controller: full-width, safe-area-aware bottom */
     #floating-controller {
         width: calc(100% - 24px);
-        padding: 10px 14px 14px;
+        padding: 10px 10px 14px;
         /* env() lifts the bar above the home indicator; max() ensures minimum
            clearance. The bar already sits above it, so its padding must not
            add the inset again. */
         bottom: max(14px, calc(env(safe-area-inset-bottom, 0px) + 8px));
     }
 
-    /* ── 2-row toolbar layout ───────────────────────────────────────────────── */
-    /* Row 1: [time] ←→ [rewind + play]                                         */
-    /* Row 2: [volume] [downloads]  (space-around)                               */
+    /* ── Toolbar: one row under the timeline ─────────────────────────────── */
+    /* [time] [rewind + play] [volume] [downloads], compacted to fit a phone; */
+    /* on screens too narrow for it the volume and downloads wrap below.     */
     .controller-inner {
         flex-wrap: wrap;
-        row-gap: 10px;
+        gap: 10px 8px;
     }
 
-    /* Row 1 left: time display */
     .time-display {
         flex: 0 0 auto;
-        min-width: 72px;
+        min-width: 0;
+        gap: 3px;
         font-size: 11px;
+        white-space: nowrap;
     }
 
-    /* Row 1 right: playback buttons pushed to the right */
     .playback-controls {
-        flex: 1;
-        justify-content: flex-end;
+        gap: 6px;
     }
 
-    /* Row 2: utility controls take full width */
+    #floating-controller .icon-btn {
+        width: 32px;
+        height: 32px;
+    }
+
     .utility-controls {
-        flex: 0 0 100%;
-        justify-content: space-around;
+        margin-left: auto;
         gap: 4px;
     }
 
-    /* Dividers look odd when spread across a full-width row — hide them */
+    /* Dividers take room the row does not have — hide them */
     .vertical-divider {
         display: none;
     }
 
+    .volume-container {
+        gap: 4px;
+    }
+
     .volume-container input[type="range"] {
-        width: 54px;
+        width: 44px;
+    }
+
+    .download-container {
+        gap: 4px;
+    }
+
+    .download-container .btn-sm {
+        padding: 6px 8px;
     }
 
     /* Sidebar: also respect dynamic viewport height */
@@ -1073,14 +1093,4 @@ html.is-playing #rewind-btn {
 
 html.is-playing .playback-controls {
     flex: 0 0 auto;
-}
-
-html.is-playing .play-pulse-btn {
-    width: 32px;
-    height: 32px;
-}
-
-html.is-playing .play-pulse-btn svg {
-    width: 16px;
-    height: 16px;
 }
