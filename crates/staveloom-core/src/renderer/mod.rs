@@ -15,6 +15,17 @@ mod utils;
 pub use types::SpacingStrategy;
 use types::*;
 
+/// Accidentals less than this many diatonic steps apart (a sixth) overlap and
+/// need separate columns; shared by the layout and the drawing.
+pub(crate) const ACCIDENTAL_COLUMN_STEPS: i32 = 5;
+
+/// How far a tuplet bracket's hooks and number reach past its line (px).
+const TUPLET_REACH: f32 = 8.0;
+
+/// Room the layout keeps for a fermata past the staff's outer line (px):
+/// process_fermatas draws the 13px glyph from 11px to 24px out, plus a margin.
+const FERMATA_REACH: f32 = 35.0;
+
 pub struct Renderer {
     /// 보표에서 인접한 두 줄 사이의 세로 간격(SVG px 단위). 렌더러가 글리프 크기를
     /// 산정하는 기준 단위이기도 해서(예: 노트헤드 폰트 크기는 `staff_line_distance * 4.0`,
@@ -116,7 +127,7 @@ pub struct Renderer {
     placed_dynamics: std::cell::RefCell<Vec<(f32, f32, f32, bool, i32)>>,
     /// Hairpin segments drawn in the current system as (x1, x2, bottom y,
     /// top y), so pedal lines can be kept clear of them.
-    placed_wedges: std::cell::RefCell<Vec<(f32, f32, f32, f32)>>,
+    placed_wedges: std::cell::RefCell<Vec<(f32, f32, f32, f32, f32)>>,
     /// Directions drawn in the current system, by staff and side.
     gap_items: std::cell::RefCell<Vec<GapItem>>,
     /// x range of the measure whose directions are being placed.
@@ -152,6 +163,19 @@ pub struct Renderer {
     placed_notes: std::cell::RefCell<Vec<PlacedNote>>,
     /// Tuplets finished in the current measure, drawn at its end.
     pending_tuplets: std::cell::RefCell<Vec<PendingTuplet>>,
+    /// Accidentals drawn in the current system as (staff top y, x, y), so a
+    /// second voice's accidentals at the same onset take the next column
+    /// instead of printing over the first voice's.
+    placed_accidentals: std::cell::RefCell<Vec<(f32, f32, f32)>>,
+    /// Tuplet brackets drawn in the current system as (part top y, staff,
+    /// x1, x2, top, bottom): hairpins and other directions stay clear of them.
+    placed_tuplets: std::cell::RefCell<Vec<(f32, i32, f32, f32, f32, f32)>>,
+    /// Fingerings drawn in the current system as (part top y, x, centre y):
+    /// lines placed later over the notes (barre brackets) clear them.
+    placed_fingerings: std::cell::RefCell<Vec<(f32, f32, f32)>>,
+    /// Marks on the stem side of a beamed note (fingerings), held until the
+    /// beam is drawn and its final stem tip is known.
+    pending_beam_marks: std::cell::RefCell<Vec<PendingBeamMark>>,
     /// Direction texts (words, tempo marks, dynamics) placed in the current
     /// system as (x1, x2, top, bottom, below), so later ones can be moved
     /// clear of them.
@@ -308,6 +332,10 @@ impl Default for Renderer {
             placed_slurs: std::cell::RefCell::new(Vec::new()),
             placed_notes: std::cell::RefCell::new(Vec::new()),
             pending_tuplets: std::cell::RefCell::new(Vec::new()),
+            placed_accidentals: std::cell::RefCell::new(Vec::new()),
+            placed_tuplets: std::cell::RefCell::new(Vec::new()),
+            placed_fingerings: std::cell::RefCell::new(Vec::new()),
+            pending_beam_marks: std::cell::RefCell::new(Vec::new()),
             placed_text_boxes: std::cell::RefCell::new(Vec::new()),
             current_part_y: std::cell::Cell::new(0.0),
             deferred_pedals: std::cell::RefCell::new(Vec::new()),
@@ -353,6 +381,18 @@ struct BracketStartInfo {
     y: f32,
     line_type: Option<String>,
     line_end: Option<String>,
+    /// Carried over a system break: `y` is relative to the part's top until
+    /// the next system starts.
+    is_continuation: bool,
+    /// Text leading the line (a barre "IV") and the x it starts at; drawn
+    /// with the line, once its height is known.
+    label: Option<(String, f32)>,
+    is_below: bool,
+    staff: i32,
+    /// A stop met before its start (an exporter writing one voice's stop
+    /// ahead of another voice's start at an earlier beat): its x and line
+    /// end, waiting for the start later in the same measure.
+    pending_stop: Option<(f32, Option<String>)>,
 }
 
 #[derive(Clone)]
@@ -364,7 +404,10 @@ struct EndingStartInfo {
 }
 
 enum StackedItem {
-    DirectionType(crate::models::DirectionType, Option<String>, Option<i32>), // type, placement, staff
+    /// type, placement, staff, and for a bracket or dashes line starting
+    /// with a text in the same direction (a barre "½C9", "cresc."), that text,
+    /// printed inline at the line's start.
+    DirectionType(crate::models::DirectionType, Option<String>, Option<i32>, Option<String>),
     Harmony(crate::models::Harmony),
     Lyric(crate::models::Lyric, i32), // lyric, staff
 }
@@ -472,6 +515,10 @@ struct OctaveShiftStartInfo {
     shift_type: String, // "up" or "down"
     staff: Option<i32>,
     is_below: bool,
+    /// Its stop has been passed in the measure being drawn: later notes are
+    /// no longer shifted, though the line is only drawn (and the entry
+    /// removed) with the measure's directions.
+    ended: bool,
 }
 
 #[derive(Clone)]
@@ -488,7 +535,9 @@ struct PedalStartInfo {
 #[derive(Clone)]
 struct PartState {
     active_slurs: HashMap<i32, SlurStartInfo>,
-    active_ties: HashMap<(String, i32), TieStartInfo>,
+    /// Keyed by (step, octave, staff): a part can hold the same pitch on two
+    /// staves at once (notation + TAB), each with its own tie.
+    active_ties: HashMap<(String, i32, i32), TieStartInfo>,
     active_tuplets: HashMap<i32, TupletStartInfo>,
     active_brackets: HashMap<i32, BracketStartInfo>,
     active_dashes: HashMap<i32, DashesStartInfo>,
@@ -956,6 +1005,10 @@ impl Renderer {
             self.placed_slurs.borrow_mut().clear();
             self.placed_notes.borrow_mut().clear();
             self.pending_tuplets.borrow_mut().clear();
+            self.placed_accidentals.borrow_mut().clear();
+            self.placed_tuplets.borrow_mut().clear();
+            self.placed_fingerings.borrow_mut().clear();
+            self.pending_beam_marks.borrow_mut().clear();
             self.deferred_pedals.borrow_mut().clear();
             let current_margin_left = if sys_idx == 0 {
                 first_margin
@@ -1040,7 +1093,9 @@ impl Renderer {
                                         // used to decide which side of the staff marks land on.
                                         let mut note_stem_up: Option<bool> = None;
 
-                                        if let Some(pitch) = &n.pitch {
+                                        // TAB fret numbers sit on the string lines, not at the pitch's
+                                        // staff position, and carry no stems; a hidden note draws nothing.
+                                        if let Some(pitch) = n.pitch.as_ref().filter(|_| clef.sign != "TAB" && n.print_object != Some(false)) {
                                             let y = self.pitch_to_y(pitch, &clef, 0.0);
                                             note_min_head = y - 5.0;
                                             note_max_head = y + 5.0;
@@ -1126,12 +1181,20 @@ impl Renderer {
                                                             _ => !note_stem_up.unwrap_or(false),
                                                         },
                                                     };
+                                                    // A fermata glyph reaches further from the
+                                                    // staff than a dot or a tuplet number.
+                                                    let (top, bottom) =
+                                                        if matches!(notation, Notation::Fermata { .. }) {
+                                                            (-FERMATA_REACH, 40.0 + FERMATA_REACH)
+                                                        } else {
+                                                            (-15.0, 55.0)
+                                                        };
                                                     if above {
-                                                        note_min_total = note_min_total.min(-15.0);
-                                                        note_min_head = note_min_head.min(-15.0);
+                                                        note_min_total = note_min_total.min(top);
+                                                        note_min_head = note_min_head.min(top);
                                                     } else {
-                                                        note_max_total = note_max_total.max(55.0);
-                                                        note_max_head = note_max_head.max(55.0);
+                                                        note_max_total = note_max_total.max(bottom);
+                                                        note_max_head = note_max_head.max(bottom);
                                                     }
                                                 }
                                                 Notation::Ornaments(ornaments) => {
@@ -1483,7 +1546,9 @@ impl Renderer {
                                         let mut note_min = s_offset;
                                         let mut note_max = s_offset + 40.0;
 
-                                        if let Some(pitch) = &n.pitch {
+                                        // TAB fret numbers sit on the string lines, not at the pitch's
+                                        // staff position, and carry no stems; a hidden note draws nothing.
+                                        if let Some(pitch) = n.pitch.as_ref().filter(|_| clef.sign != "TAB" && n.print_object != Some(false)) {
                                             let y = self.pitch_to_y(pitch, &clef, 0.0);
                                             note_min = y - 5.0 + s_offset;
                                             note_max = y + 5.0 + s_offset;
@@ -1540,8 +1605,16 @@ impl Renderer {
 
                                         for notation in &n.notations {
                                             match notation {
+                                                Notation::Fermata { note_type, .. } => {
+                                                    if note_type.as_deref() == Some("inverted") {
+                                                        note_max = note_max
+                                                            .max(s_offset + 40.0 + FERMATA_REACH);
+                                                    } else {
+                                                        note_min =
+                                                            note_min.min(s_offset - FERMATA_REACH);
+                                                    }
+                                                }
                                                 Notation::Tuplet { .. }
-                                                | Notation::Fermata { .. }
                                                 | Notation::Articulation { .. } => {
                                                     note_min = note_min.min(s_offset - 15.0);
                                                     note_max = note_max.max(s_offset + 55.0);
@@ -1889,7 +1962,9 @@ impl Renderer {
                                                 line: Some(2),
                                                 ..Default::default()
                                             });
-                                        if let Some(pitch) = &n.pitch {
+                                        // TAB fret numbers sit on the string lines, not at the pitch's
+                                        // staff position, and carry no stems; a hidden note draws nothing.
+                                        if let Some(pitch) = n.pitch.as_ref().filter(|_| clef.sign != "TAB" && n.print_object != Some(false)) {
                                             let y = self.pitch_to_y(pitch, &clef, 0.0);
                                             let clearance = notation_top_clearance(&n.notations);
                                             max_top_protrusion = max_top_protrusion.max(
@@ -1944,6 +2019,10 @@ impl Renderer {
             self.beamed_stem_tips.borrow_mut().clear();
             self.placed_notes.borrow_mut().clear();
             self.pending_tuplets.borrow_mut().clear();
+            self.placed_accidentals.borrow_mut().clear();
+            self.placed_tuplets.borrow_mut().clear();
+            self.placed_fingerings.borrow_mut().clear();
+            self.pending_beam_marks.borrow_mut().clear();
             let mut measure_coords_in_system = Vec::new();
             let mut system_metadata_y = (0.0, 0.0);
 
@@ -2208,6 +2287,13 @@ impl Renderer {
                             d.is_continuation = false;
                         }
                     }
+                    for b in state.active_brackets.values_mut() {
+                        if b.is_continuation {
+                            b.y = part_start_y + b.y;
+                            b.x = current_margin_left;
+                            b.is_continuation = false;
+                        }
+                    }
                     for l in state.active_lyrics.values_mut() {
                         if l.is_continuation {
                             l.y = part_start_y + l.y;
@@ -2217,7 +2303,11 @@ impl Renderer {
                     }
                     for o in state.active_octave_shifts.values_mut() {
                         if o.is_continuation {
-                            o.y = part_start_y + o.y;
+                            // Stored relative to its own staff (the gap to the
+                            // staff above may differ on this system).
+                            let staff_top = part_start_y
+                                + (o.staff.unwrap_or(1) - 1) as f32 * staff_dist;
+                            o.y = staff_top + o.y;
                             o.x = current_margin_left;
                             o.is_continuation = false;
                         }
@@ -2275,6 +2365,12 @@ impl Renderer {
                             s.is_continuation = false;
                         }
                     }
+
+                    // Lyrics are drawn once the whole system is laid out, each verse
+                    // on one line: below the lowest point any measure needs, not
+                    // dipping under each low note.
+                    let mut pending_lyrics: Vec<(crate::models::Lyric, f32, i32)> = Vec::new();
+                    let mut system_lyric_baselines: HashMap<i32, f32> = HashMap::new();
 
                     for (sys_m_idx, (&m_idx, &m_width)) in system
                         .measure_indices
@@ -2547,6 +2643,10 @@ impl Renderer {
                             // finished tuplets; only the real pass's may stay.
                             let placed_notes_len = self.placed_notes.borrow().len();
                             let pending_tuplets_len = self.pending_tuplets.borrow().len();
+                            let pending_beam_marks_len = self.pending_beam_marks.borrow().len();
+                            let placed_accidentals_len = self.placed_accidentals.borrow().len();
+                            let placed_tuplets_len = self.placed_tuplets.borrow().len();
+                            let placed_fingerings_len = self.placed_fingerings.borrow().len();
                             let mut temp_time_pos = 0;
                             let mut temp_chord_group = Vec::new();
                             let mut temp_group_time_pos = 0;
@@ -3141,9 +3241,26 @@ impl Renderer {
 
                             self.placed_notes.borrow_mut().truncate(placed_notes_len);
                             self.pending_tuplets.borrow_mut().truncate(pending_tuplets_len);
+                            self.pending_beam_marks.borrow_mut().truncate(pending_beam_marks_len);
+                            self.placed_accidentals.borrow_mut().truncate(placed_accidentals_len);
+                            self.placed_tuplets.borrow_mut().truncate(placed_tuplets_len);
+                            self.placed_fingerings.borrow_mut().truncate(placed_fingerings_len);
                             // Update active octave shifts based on the pre-calculated measure occupancy
                             // to ensure they clear all notes in this measure.
+                            // (Not one between two staves: the part-wide occupancy
+                            // includes the other staff, and would pull it over that
+                            // staff's notes. It clears its own staff when drawn.)
+                            let num_staves_here = state.num_staves;
                             for (&_num, start_info) in state.active_octave_shifts.iter_mut() {
+                                let staff = start_info.staff.unwrap_or(1);
+                                let between_staves = if start_info.is_below {
+                                    staff < num_staves_here
+                                } else {
+                                    staff > 1
+                                };
+                                if between_staves {
+                                    continue;
+                                }
                                 for (&_time, &(m_min, m_max)) in &measure_occupancy {
                                     let abs_min = m_min + part_start_y;
                                     let abs_max = m_max + part_start_y;
@@ -3881,7 +3998,35 @@ impl Renderer {
                                             + x_ratio * content_width
                                             + current_time_x_offset;
 
+                                        // Words leading a bracket or dashes line started in
+                                        // the same direction are its label, drawn with it.
+                                        let starts_line = |t: &crate::models::DirectionType| {
+                                            matches!(t, crate::models::DirectionType::Bracket(b) if b.bracket_type == "start")
+                                                || matches!(t, crate::models::DirectionType::Dashes(d) if d.dashes_type == "start")
+                                        };
+                                        let line_label: Option<String> =
+                                            if dir.types.iter().any(starts_line) {
+                                                let text: String = dir
+                                                    .types
+                                                    .iter()
+                                                    .filter_map(|t| match t {
+                                                        crate::models::DirectionType::Words(w) => {
+                                                            Some(w.as_str())
+                                                        }
+                                                        _ => None,
+                                                    })
+                                                    .collect::<Vec<_>>()
+                                                    .join(" ");
+                                                (!text.trim().is_empty()).then_some(text)
+                                            } else {
+                                                None
+                                            };
                                         for dtype in &dir.types {
+                                            if line_label.is_some()
+                                                && matches!(dtype, crate::models::DirectionType::Words(_))
+                                            {
+                                                continue;
+                                            }
                                             // Immediately update state-affecting directions for correct note positioning
                                             if let crate::models::DirectionType::OctaveShift(
                                                 shift,
@@ -3907,23 +4052,18 @@ impl Renderer {
                                                             shift_type: shift.shift_type.clone(),
                                                             staff: dir.staff,
                                                             is_below,
+                                                            ended: false,
                                                         },
                                                     );
                                                 } else if shift.shift_type == "stop" {
-                                                    // Remove immediately so subsequent notes in this measure aren't shifted.
-                                                    // The draw_direction call in the priority pass will still need to know
-                                                    // it's a 'stop' and where it started.
-                                                    // We'll rely on draw_direction's own logic to handle it if we can
-                                                    // ensure it doesn't conflict.
-                                                    // Actually, if we remove it here, draw_direction (in priority pass)
-                                                    // will find nothing in state.active_octave_shifts and won't draw the spanner.
-                                                    // To fix this, we'll keep it in state for the rest of the measure
-                                                    // but pass a flag to process_chord_group? No.
-
-                                                    // Let's just remove it and let DRAWING be handled differently?
-                                                    // No, let's just accept that 'stop' in the middle of a measure
-                                                    // might shift all notes in that measure if we aren't careful.
-                                                    // BUT MusicXML usually puts Direction BEFORE the notes.
+                                                    // Notes from here on are unshifted; the line
+                                                    // itself is drawn in the priority pass.
+                                                    if let Some(active) = state
+                                                        .active_octave_shifts
+                                                        .get_mut(&shift.number.unwrap_or(1))
+                                                    {
+                                                        active.ended = true;
+                                                    }
                                                 }
                                             }
                                             priority_elements.push(StackedElement {
@@ -3933,6 +4073,7 @@ impl Renderer {
                                                     dtype.clone(),
                                                     dir.placement.clone(),
                                                     dir.staff,
+                                                    line_label.clone().filter(|_| starts_line(dtype)),
                                                 ),
                                             });
                                         }
@@ -4606,6 +4747,9 @@ impl Renderer {
                                 self.beamed_stem_tips.borrow_mut().drain(..).collect();
                             Self::reanchor_slurs_to_beams(&mut state.active_slurs, &beam_tips);
                             self.apply_beam_tips_to_placed_notes(&beam_tips);
+                            // Anything still waiting has no beam coming: draw it
+                            // where its note put it.
+                            sys_doc = self.place_beam_marks(sys_doc, &beam_tips, true);
                             sys_doc = self.flush_known_end_slurs(sys_doc, &mut state.active_slurs);
                             sys_doc = self.flush_pending_tuplets(sys_doc);
                             // A slur stop whose start never appeared in this measure
@@ -4645,6 +4789,20 @@ impl Renderer {
                                 let in_measure = sx1 < measure_x + m_width && sx2 > measure_x;
                                 let in_part = bottom > part_band_top && top < part_band_bottom;
                                 if in_measure && in_part {
+                                    measure_extreme_occ = Some(match measure_extreme_occ {
+                                        Some((lo, hi)) => (lo.min(top), hi.max(bottom)),
+                                        None => (top, bottom),
+                                    });
+                                }
+                            }
+                            // So do this part's tuplet brackets.
+                            for &(t_part_y, _, tx1, tx2, top, bottom) in
+                                self.placed_tuplets.borrow().iter()
+                            {
+                                if (t_part_y - part_start_y).abs() < 0.5
+                                    && tx1 < measure_x + m_width
+                                    && tx2 > measure_x
+                                {
                                     measure_extreme_occ = Some(match measure_extreme_occ {
                                         Some((lo, hi)) => (lo.min(top), hi.max(bottom)),
                                         None => (top, bottom),
@@ -4723,6 +4881,28 @@ impl Renderer {
                                         w.y = w.y.min(top - half - 6.0);
                                     }
                                 }
+                                // Likewise this staff's tuplet brackets under it.
+                                for &(t_part_y, t_staff, tx1, tx2, top, bottom) in
+                                    self.placed_tuplets.borrow().iter()
+                                {
+                                    if (t_part_y - part_start_y).abs() >= 0.5
+                                        || t_staff != w.staff
+                                        || tx1 >= measure_x + m_width
+                                        || tx2 <= w.x
+                                    {
+                                        continue;
+                                    }
+                                    let crosses =
+                                        top < w.y + half + 4.0 && bottom > w.y - half - 4.0;
+                                    if !crosses {
+                                        continue;
+                                    }
+                                    if w.is_below {
+                                        w.y = w.y.max(bottom + half + 6.0);
+                                    } else {
+                                        w.y = w.y.min(top - half - 6.0);
+                                    }
+                                }
                             }
                             for w in state.active_wedges.values_mut() {
                                 let Some(placed) = w.resumed_line else { continue };
@@ -4775,6 +4955,7 @@ impl Renderer {
                                     StackedItem::DirectionType(
                                         crate::models::DirectionType::Pedal(_),
                                         _,
+                                        _,
                                         _
                                     )
                                 ) {
@@ -4784,7 +4965,7 @@ impl Renderer {
                                 }
 
                                 match element.item {
-                                    StackedItem::DirectionType(dtype, placement, staff) => {
+                                    StackedItem::DirectionType(dtype, placement, staff, label) => {
                                         let is_below = placement.as_deref() == Some("below");
                                         let _target_staff =
                                             staff.unwrap_or(if is_below { num_staves } else { 1 });
@@ -4803,7 +4984,11 @@ impl Renderer {
 
                                         let temp_dir = crate::models::Direction {
                                             placement,
-                                            types: vec![dtype],
+                                            types: label
+                                                .map(crate::models::DirectionType::Words)
+                                                .into_iter()
+                                                .chain([dtype])
+                                                .collect(),
                                             staff,
                                         };
 
@@ -4875,18 +5060,11 @@ impl Renderer {
                                         let lyric_x = content_start_x
                                             + x_ratio * content_width
                                             + current_time_x_offset;
-                                        let (new_doc, _) = self.draw_lyric(
-                                            sys_doc,
-                                            &lyric,
-                                            lyric_x,
-                                            part_start_y,
-                                            staff,
-                                            0.0,
-                                            staff_dist,
-                                            &mut state.active_lyrics,
-                                            *lyrics_baselines_y.get(&verse).unwrap(),
-                                        );
-                                        sys_doc = new_doc;
+                                        let base = system_lyric_baselines
+                                            .entry(verse)
+                                            .or_insert(f32::MIN);
+                                        *base = base.max(*lyrics_baselines_y.get(&verse).unwrap());
+                                        pending_lyrics.push((lyric, lyric_x, staff));
                                         let entry =
                                             measure_occupancy.entry(time).or_insert((0.0, 0.0));
                                         entry.1 = entry.1.max(
@@ -4896,6 +5074,9 @@ impl Renderer {
                                     }
                                 }
                             }
+                            // A bracket stop whose start never came in this
+                            // measure can't be paired; drop it.
+                            state.active_brackets.retain(|_, b| b.pending_stop.is_none());
                             // Pedal lines still open after this measure must also
                             // clear it, so the whole line stays flat below (or
                             // above) everything it passes.
@@ -4964,6 +5145,24 @@ impl Renderer {
 
                         // System break handling for active spanners
                         if m_idx == *system.measure_indices.last().unwrap() {
+                            // 0. Lyrics collected over the system, before the
+                            // system-end extenders below continue them.
+                            Self::stack_verse_baselines(&mut system_lyric_baselines);
+                            for (lyric, lyric_x, staff) in pending_lyrics.drain(..) {
+                                let verse = lyric.number.unwrap_or(1);
+                                let (new_doc, _) = self.draw_lyric(
+                                    sys_doc,
+                                    &lyric,
+                                    lyric_x,
+                                    part_start_y,
+                                    staff,
+                                    0.0,
+                                    staff_dist,
+                                    &mut state.active_lyrics,
+                                    system_lyric_baselines[&verse],
+                                );
+                                sys_doc = new_doc;
+                            }
                             let system_end_x = measure_x + m_width;
 
                             // 1. Endings
@@ -4995,6 +5194,7 @@ impl Renderer {
                                     system_end_x,
                                     start_info.is_below,
                                     &state.active_wedges,
+                                    self.current_part_y.get(),
                                 );
                                 sys_doc = self.draw_pedal_line(
                                     sys_doc,
@@ -5050,7 +5250,9 @@ impl Renderer {
                                     start_info.staff.unwrap_or(1),
                                 );
                                 start_info.x = current_margin_left;
-                                start_info.y = start_info.y - part_start_y; // Store as relative offset
+                                // Relative to its own staff's top line.
+                                start_info.y -= part_start_y
+                                    + (start_info.staff.unwrap_or(1) - 1) as f32 * staff_dist;
                                 start_info.is_continuation = true;
                             }
                             // 4. Groupings
@@ -5083,6 +5285,21 @@ impl Renderer {
                                 sys_doc = sys_doc.add(line);
                                 start_info.x = current_margin_left;
                                 start_info.y = start_info.y - part_start_y; // Store as relative
+                                start_info.is_continuation = true;
+                            }
+                            // 5.5 Brackets: run to the system's end (open there,
+                            // with the start's hook) and resume on the next.
+                            for (&_num, start_info) in state.active_brackets.iter_mut() {
+                                sys_doc = self.draw_bracket_span(
+                                    sys_doc,
+                                    start_info,
+                                    system_end_x,
+                                    &None,
+                                );
+                                start_info.x = current_margin_left;
+                                start_info.y = start_info.y - part_start_y;
+                                start_info.line_end = None;
+                                start_info.label = None;
                                 start_info.is_continuation = true;
                             }
                             // 6. Slurs
@@ -5119,7 +5336,7 @@ impl Renderer {
                                 start_info.is_continuation = true;
                             }
                             // 7. Ties
-                            for ((_step, _oct), start_info) in state.active_ties.iter_mut() {
+                            for (_, start_info) in state.active_ties.iter_mut() {
                                 sys_doc = self.draw_tie(
                                     sys_doc,
                                     start_info.x,
@@ -5212,6 +5429,24 @@ impl Renderer {
                         if m_width > 0.0 {
                             measure_x += m_width;
                         }
+                    }
+                    // The system's last measure was skipped (e.g. inside a
+                    // multi-measure rest): still draw what was collected.
+                    Self::stack_verse_baselines(&mut system_lyric_baselines);
+                    for (lyric, lyric_x, staff) in pending_lyrics.drain(..) {
+                        let verse = lyric.number.unwrap_or(1);
+                        let (new_doc, _) = self.draw_lyric(
+                            sys_doc,
+                            &lyric,
+                            lyric_x,
+                            part_start_y,
+                            staff,
+                            0.0,
+                            staff_dist,
+                            &mut state.active_lyrics,
+                            system_lyric_baselines[&verse],
+                        );
+                        sys_doc = new_doc;
                     }
                 }
             }
@@ -5385,6 +5620,53 @@ impl Renderer {
         )
     }
 
+    /// Each verse's lyric line at least one line below the previous verse's,
+    /// so verses never overprint (a measure whose notes stay inside the staff
+    /// would otherwise give every verse the same height).
+    fn stack_verse_baselines(baselines: &mut HashMap<i32, f32>) {
+        const LYRIC_LINE: f32 = 15.0;
+        let mut verses: Vec<i32> = baselines.keys().copied().collect();
+        verses.sort_unstable();
+        let mut prev: Option<f32> = None;
+        for v in verses {
+            let y = baselines.get_mut(&v).unwrap();
+            if let Some(p) = prev {
+                *y = y.max(p + LYRIC_LINE);
+            }
+            prev = Some(*y);
+        }
+    }
+
+    /// Direction text whose SMuFL symbols (private-use code points, e.g. the
+    /// flat MuseScore writes after a chord root) are set in the music font:
+    /// the text font has no glyphs for them.
+    fn words_text(&self, text: &str) -> Text {
+        let is_smufl = |c: char| ('\u{E000}'..='\u{F8FF}').contains(&c);
+        if !text.chars().any(is_smufl) {
+            return Text::new(text);
+        }
+        let mut node = Text::new("");
+        let mut run = String::new();
+        let mut run_smufl = false;
+        for c in text.chars().chain(std::iter::once('\0')) {
+            let end = c == '\0';
+            if !run.is_empty() && (end || is_smufl(c) != run_smufl) {
+                let span = svg::node::element::TSpan::new(std::mem::take(&mut run));
+                node = node.add(if run_smufl {
+                    span.set("font-family", self.font_family.as_str())
+                        .set("font-style", "normal")
+                } else {
+                    span
+                });
+            }
+            if !end {
+                run_smufl = is_smufl(c);
+                run.push(c);
+            }
+        }
+        node
+    }
+
     fn draw_direction(
         &self,
         mut doc: Document,
@@ -5427,6 +5709,36 @@ impl Renderer {
         }
 
         let mut local_x = x;
+        // Text leading a bracket or dashes line started here: printed at the
+        // line's height, the line going on right after it (not stacked apart).
+        let line_label: Option<&str> = dir
+            .types
+            .iter()
+            .any(|t| {
+                matches!(t, crate::models::DirectionType::Bracket(b) if b.bracket_type == "start")
+                    || matches!(t, crate::models::DirectionType::Dashes(d) if d.dashes_type == "start")
+            })
+            .then(|| {
+                dir.types.iter().find_map(|t| match t {
+                    crate::models::DirectionType::Words(w) => Some(w.as_str()),
+                    _ => None,
+                })
+            })
+            .flatten();
+        let draw_line_label = |doc: Document, x: f32| -> (Document, f32) {
+            let Some(text) = line_label else { return (doc, x) };
+            let text_w = text.chars().count() as f32 * 6.5;
+            let node = self
+                .words_text(text)
+                .set("x", x)
+                .set("y", shared_y)
+                .set("font-size", 12)
+                .set("text-anchor", "start")
+                .set("dominant-baseline", "central")
+                .set("font-family", "serif")
+                .set("font-style", "italic");
+            (doc.add(node), x + text_w + 4.0)
+        };
 
         for dtype in &dir.types {
             match dtype {
@@ -5512,6 +5824,9 @@ impl Renderer {
                         local_occ = Some((dyn_y - 15.0, local_occ.map(|o| o.1).unwrap_or(dyn_y)));
                     }
                 }
+                crate::models::DirectionType::Words(_) if line_label.is_some() => {
+                    // Drawn with its line below.
+                }
                 crate::models::DirectionType::Words(text_str) => {
                     let mut text_y = shared_y;
                     if let Some((min_y, max_y)) = measure_extreme_occ.filter(|_| !between) {
@@ -5559,7 +5874,8 @@ impl Renderer {
                         text_y - 7.0,
                         text_y + 7.0,
                     );
-                    let text = Text::new(text_str.as_str())
+                    let text = self
+                        .words_text(text_str)
                         .set("x", local_x)
                         .set("y", text_y)
                         .set("font-size", 12)
@@ -5626,43 +5942,79 @@ impl Renderer {
                 crate::models::DirectionType::Bracket(bracket) => {
                     let num = bracket.number.unwrap_or(1);
                     if bracket.bracket_type == "start" {
-                        let mut bracket_x = x;
-                        if dir
-                            .types
-                            .iter()
-                            .any(|t| matches!(t, crate::models::DirectionType::Words(_)))
-                        {
-                            bracket_x += 35.0; // Fixed offset for "w/bar"
+                        // The line and its label are drawn at its stop (or the
+                        // system's end), at a height clearing all it spans.
+                        let label_w = line_label.map_or(0.0, |t| t.chars().count() as f32 * 6.5 + 4.0);
+                        // Its stop already came (later in time or at the same
+                        // beat, earlier in the file).
+                        let early_stop = active_brackets
+                            .get(&num)
+                            .and_then(|b| b.pending_stop.clone())
+                            .filter(|(stop_x, _)| *stop_x > x - 0.5);
+                        if early_stop.is_some() {
+                            active_brackets.remove(&num);
                         }
                         active_brackets.insert(
                             num,
                             BracketStartInfo {
-                                x: bracket_x,
+                                x: x + label_w,
                                 y: shared_y,
                                 line_type: bracket.line_type.clone(),
                                 line_end: bracket.line_end.clone(),
+                                is_continuation: false,
+                                label: line_label.map(|t| (t.to_string(), x)),
+                                is_below,
+                                staff: target_staff,
+                                pending_stop: None,
                             },
                         );
+                        if let Some((stop_x, stop_end)) = early_stop {
+                            let start_info = active_brackets.remove(&num).unwrap();
+                            // (One starting and stopping on the same beat spans nothing.)
+                            if stop_x > start_info.x + 1.0 {
+                                doc = self.draw_bracket_span(doc, &start_info, stop_x, &stop_end);
+                            }
+                        }
                     } else if bracket.bracket_type == "stop" {
-                        if let Some(start_info) = active_brackets.remove(&num) {
-                            doc = self.draw_horizontal_bracket(
-                                doc,
-                                start_info.x,
-                                start_info.y,
-                                x,
-                                start_info.y,
-                                &start_info.line_type,
-                                &start_info.line_end,
-                                &bracket.line_end,
-                            );
+                        match active_brackets.remove(&num) {
+                            Some(start_info) if start_info.pending_stop.is_none() => {
+                                doc = self.draw_bracket_span(doc, &start_info, x, &bracket.line_end);
+                            }
+                            _ => {
+                                // No start yet: keep the stop for a start at an
+                                // earlier beat further on in this measure.
+                                active_brackets.insert(
+                                    num,
+                                    BracketStartInfo {
+                                        x,
+                                        y: shared_y,
+                                        line_type: None,
+                                        line_end: None,
+                                        is_continuation: false,
+                                        label: None,
+                                        is_below,
+                                        staff: target_staff,
+                                        pending_stop: Some((x, bracket.line_end.clone())),
+                                    },
+                                );
+                            }
                         }
                     }
-                    if is_below {
-                        local_occ =
-                            Some((local_occ.map(|o| o.0).unwrap_or(shared_y), shared_y + 10.0));
-                    } else {
-                        local_occ =
-                            Some((shared_y - 10.0, local_occ.map(|o| o.1).unwrap_or(shared_y)));
+                    // A stop takes no new room: the line was placed at its
+                    // start, and a bracket starting on the same beat (the next
+                    // barre) should stay on that line, not stack above it.
+                    if bracket.bracket_type != "stop" {
+                        if is_below {
+                            local_occ = Some((
+                                local_occ.map(|o| o.0).unwrap_or(shared_y),
+                                shared_y + 10.0,
+                            ));
+                        } else {
+                            local_occ = Some((
+                                shared_y - 10.0,
+                                local_occ.map(|o| o.1).unwrap_or(shared_y),
+                            ));
+                        }
                     }
                 }
                 crate::models::DirectionType::Coda => {
@@ -5897,6 +6249,7 @@ impl Renderer {
                             shift_type: shift.shift_type.clone(),
                             staff: dir.staff,
                             is_below,
+                            ended: false,
                         };
                         // Clear the notes drawn so far after the start now, so
                         // directions placed after this one make room for it.
@@ -6003,6 +6356,7 @@ impl Renderer {
                                         x,
                                         is_below,
                                         active_wedges,
+                                        self.current_part_y.get(),
                                     );
                                     doc = self.draw_pedal_line(
                                         doc,
@@ -6034,6 +6388,7 @@ impl Renderer {
                                         x,
                                         is_below,
                                         active_wedges,
+                                        self.current_part_y.get(),
                                     );
                                     doc = self.draw_pedal_line(
                                         doc,
@@ -6082,10 +6437,12 @@ impl Renderer {
                 crate::models::DirectionType::Dashes(dashes) => {
                     let num = dashes.number.unwrap_or(1);
                     if dashes.dashes_type == "start" {
+                        let (new_doc, line_x) = draw_line_label(doc, local_x);
+                        doc = new_doc;
                         active_dashes.insert(
                             num,
                             DashesStartInfo {
-                                x: local_x,
+                                x: line_x,
                                 y: shared_y,
                                 dash_length: dashes.dash_length,
                                 space_length: dashes.space_length,
@@ -6180,6 +6537,7 @@ impl Renderer {
             x1.max(x2),
             y1.max(y2) + half,
             y1.min(y2) - half,
+            self.current_part_y.get(),
         ));
 
         let data = Data::new()
@@ -6299,6 +6657,65 @@ impl Renderer {
 
         doc.add(path)
     }
+    /// Draws a bracket line (with its label) from its start to `x2`, moved
+    /// out from where it started until it clears the notes (stems and beams
+    /// included) and slurs of its staff all along the way.
+    fn draw_bracket_span(
+        &self,
+        mut doc: Document,
+        b: &BracketStartInfo,
+        x2: f32,
+        stop_end: &Option<String>,
+    ) -> Document {
+        const CLEARANCE: f32 = 12.0;
+        let part_y = self.current_part_y.get();
+        let x1 = b.label.as_ref().map_or(b.x, |(_, lx)| *lx);
+        let within = |x: f32| x >= x1 - 4.0 && x <= x2 + 4.0;
+        let mut y = b.y;
+        let mut clear = |edge: f32| {
+            y = if b.is_below { y.max(edge + CLEARANCE) } else { y.min(edge - CLEARANCE) };
+        };
+        for pn in self.placed_notes.borrow().iter() {
+            if pn.part_y != part_y || pn.staff != b.staff || !within(pn.x) {
+                continue;
+            }
+            let (top, bottom) = self.note_extent_own_staff(pn);
+            clear(if b.is_below { bottom } else { top });
+        }
+        for sl in self.placed_slurs.borrow().iter() {
+            if sl.cross_staff || sl.staff != b.staff || (sl.part_y - part_y).abs() >= 0.5 {
+                continue;
+            }
+            let (a, c) = sl.x_range();
+            let (lo, hi) = (a.max(x1), c.min(x2));
+            if lo < hi {
+                for i in 0..=8 {
+                    clear(sl.y_at(lo + (hi - lo) * i as f32 / 8.0));
+                }
+            }
+        }
+        // Fingerings over the notes (about 6px either side of their centre).
+        for &(f_part_y, fx, fy) in self.placed_fingerings.borrow().iter() {
+            if (f_part_y - part_y).abs() < 0.5 && within(fx) {
+                clear(if b.is_below { fy + 6.0 } else { fy - 6.0 });
+            }
+        }
+        if let Some((text, lx)) = &b.label {
+            doc = doc.add(
+                self.words_text(text)
+                    .set("x", *lx)
+                    .set("y", y)
+                    .set("font-size", 12)
+                    .set("text-anchor", "start")
+                    .set("dominant-baseline", "central")
+                    .set("font-family", "serif")
+                    .set("font-style", "italic"),
+            );
+        }
+        self.note_drawn_extent(y - 8.0, y + 8.0);
+        self.draw_horizontal_bracket(doc, b.x, y, x2, y, &b.line_type, &b.line_end, stop_end)
+    }
+
     fn draw_horizontal_bracket(
         &self,
         doc: Document,
@@ -6344,8 +6761,10 @@ impl Renderer {
             .set("stroke", "black")
             .set("stroke-width", 1.0)
             .set("d", data);
-        if line_type.as_deref() == Some("dashed") {
-            path = path.set("stroke-dasharray", "5,5");
+        match line_type.as_deref() {
+            Some("dashed") => path = path.set("stroke-dasharray", "5,5"),
+            Some("dotted") => path = path.set("stroke-dasharray", "1,3"),
+            _ => {}
         }
         doc.add(path)
     }
@@ -6385,7 +6804,7 @@ impl Renderer {
         let pedals: Vec<DeferredPedal> = self.deferred_pedals.borrow_mut().drain(..).collect();
         let no_active = HashMap::new();
         for p in pedals {
-            let y = self.pedal_y_clear_of_wedges(p.y, p.x1, p.x2, p.is_below, &no_active);
+            let y = self.pedal_y_clear_of_wedges(p.y, p.x1, p.x2, p.is_below, &no_active, p.part_y);
             doc = self.render_pedal_line(
                 doc,
                 p.x1,
@@ -7084,8 +7503,15 @@ impl Renderer {
                     .set("text-anchor", "end")
                     .set("dominant-baseline", "alphabetic")
                     .set("font-family", self.font_family.as_str())
-                    .set("transform", format!("scale(1.5, {})", scale_y))
-                    .set("transform-origin", format!("{} {}", x, end_y));
+                    // Stretch about (x, end_y) in the transform itself (see
+                    // draw_arpeggio: not every renderer honours transform-origin).
+                    .set(
+                        "transform",
+                        format!(
+                            "translate({}, {}) scale(1.5, {}) translate({}, {})",
+                            x, end_y, scale_y, -x, -end_y
+                        ),
+                    );
                 doc = doc.add(text);
             }
             Some(GroupSymbol::Bracket) => {
@@ -7587,7 +8013,7 @@ impl Renderer {
             // (x1, x2, bottom) of the upper part's elements.
             let mut upper: Vec<(f32, f32, f32)> = Vec::new();
             for p in pedals.iter().filter(|p| near(p.part_y, py) && p.is_below) {
-                let y = self.pedal_y_clear_of_wedges(p.y, p.x1, p.x2, p.is_below, &no_active);
+                let y = self.pedal_y_clear_of_wedges(p.y, p.x1, p.x2, p.is_below, &no_active, p.part_y);
                 upper.push((p.x1, p.x2, y + 10.0));
             }
             upper.extend(slurs.iter().filter(|sl| near(sl.part_y, py)).map(|sl| {
@@ -7638,12 +8064,15 @@ impl Renderer {
         x2: f32,
         is_below: bool,
         active_wedges: &HashMap<i32, WedgeStartInfo>,
+        part_y: f32,
     ) -> f32 {
         const PEDAL_WEDGE_GAP: f32 = 22.0;
         let mut y = y;
         let overlaps = |a1: f32, a2: f32| a1 < x2 && a2 > x1;
-        for &(w1, w2, bottom, top) in self.placed_wedges.borrow().iter() {
-            if overlaps(w1, w2) {
+        // Only the pedal's own part: another part's hairpins under the same x
+        // would drag the pedal down past them, and the part below with it.
+        for &(w1, w2, bottom, top, w_part_y) in self.placed_wedges.borrow().iter() {
+            if (w_part_y - part_y).abs() < 0.5 && overlaps(w1, w2) {
                 y = if is_below {
                     y.max(bottom + PEDAL_WEDGE_GAP)
                 } else {
@@ -7802,7 +8231,8 @@ impl Renderer {
     }
 
     /// Vertical extent of `staff`'s notes (noteheads and stems at their final
-    /// tips) and slurs (not cross-staff ones) drawn in the current measure.
+    /// tips), slurs (not cross-staff ones) and tuplet brackets drawn in the
+    /// current measure.
     fn staff_extent_in_measure(&self, staff: i32) -> Option<(f32, f32)> {
         let (x1, x2) = self.measure_span.get();
         let part_y = self.current_part_y.get();
@@ -7826,7 +8256,17 @@ impl Renderer {
                         .fold((f32::MAX, f32::MIN), |(t, b), y| (t.min(y), b.max(y)))
                 })
             });
-        note_ext.chain(slur_ext).reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
+        let tuplets = self.placed_tuplets.borrow();
+        let tuplet_ext = tuplets
+            .iter()
+            .filter(|&&(t_part_y, t_staff, tx1, tx2, _, _)| {
+                (t_part_y - part_y).abs() < 0.5 && t_staff == staff && tx1 < x2 && tx2 > x1
+            })
+            .map(|&(_, _, _, _, top, bottom)| (top, bottom));
+        note_ext
+            .chain(slur_ext)
+            .chain(tuplet_ext)
+            .reduce(|a, b| (a.0.min(b.0), a.1.max(b.1)))
     }
 
     /// A placed note's extent with its stem, unless the stem joins a
@@ -7976,7 +8416,7 @@ impl Renderer {
         time_pos: i32,
         active_beams: &mut HashMap<(i32, i32), Vec<(StemInfo, Vec<crate::models::Beam>)>>,
         active_slurs: &mut HashMap<i32, SlurStartInfo>,
-        active_ties: &mut HashMap<(String, i32), TieStartInfo>,
+        active_ties: &mut HashMap<(String, i32, i32), TieStartInfo>,
         active_tuplets: &mut HashMap<i32, TupletStartInfo>,
         _active_lyrics: &mut HashMap<i32, LyricStartInfo>,
         active_glissandi: &mut HashMap<i32, GlissandoStartInfo>,
@@ -8029,7 +8469,7 @@ impl Renderer {
 
         let mut shift_amount = 0;
         for shift in active_octave_shifts.values() {
-            if shift.staff.unwrap_or(1) == staff_num {
+            if shift.staff.unwrap_or(1) == staff_num && !shift.ended {
                 let octaves = if shift.size >= 22 {
                     3
                 } else if shift.size >= 15 {
@@ -8204,7 +8644,7 @@ impl Renderer {
                 marks.push(mark);
             }
         }
-        let (new_doc, stem, note_x, note_y, pitches_y, note_xs) = self.draw_chord_group_at(
+        let (new_doc, stem, note_x, note_y, pitches_y, note_xs, note_ys) = self.draw_chord_group_at(
             doc,
             x,
             &effective_chord_group,
@@ -8309,7 +8749,7 @@ impl Renderer {
                         }
                         Notation::Tied { note_type } if note_type == "stop" => {
                             if let Some(p) = &n.pitch {
-                                active_ties.remove(&(p.step.clone(), p.octave));
+                                active_ties.remove(&(p.step.clone(), p.octave, n.staff.unwrap_or(1)));
                             }
                         }
                         // A trill's wavy line may end on a hidden note of the
@@ -8401,6 +8841,7 @@ impl Renderer {
             stem,
             active_ties,
             &note_xs,
+            &note_ys,
         );
         doc = new_doc;
         if new_min != f32::MAX {
@@ -8423,7 +8864,17 @@ impl Renderer {
         min_y = new_min;
         max_y = new_max;
         let (new_doc, new_min, new_max) =
-            self.process_fermatas(doc, &effective_chord_group, note_x, min_y, max_y, stem);
+            self.process_fermatas(doc, &effective_chord_group, note_x, min_y, max_y, stem, {
+                // The staff's outer lines; a 1-line staff draws its line in the middle.
+                let (top, bottom) = if line_count == 1 {
+                    let mid = staff_y_offset + 2.0 * self.staff_line_distance;
+                    (mid, mid)
+                } else {
+                    let span = (line_count - 1) as f32 * self.staff_line_distance;
+                    (staff_y_offset, staff_y_offset + span)
+                };
+                (top, bottom)
+            });
         doc = new_doc;
         min_y = new_min;
         max_y = new_max;
@@ -8505,6 +8956,7 @@ impl Renderer {
         doc = new_doc;
         min_y = new_min;
         max_y = new_max;
+        doc = self.place_beam_marks(doc, &beam_tips, false);
 
         // Collect lyrics and harmonies for prioritized stacking
         for note in &effective_chord_group {
@@ -9077,7 +9529,7 @@ impl Renderer {
         lyric: &crate::models::Lyric,
         x: f32,
         _part_start_y: f32,
-        _staff: i32,
+        staff: i32,
         _max_y: f32,
         _staff_dist: f32,
         active_lyrics: &mut HashMap<i32, LyricStartInfo>,
@@ -9086,6 +9538,9 @@ impl Renderer {
         let y = baseline_y;
 
         if !lyric.text.is_empty() {
+            // Recorded so the part below is pushed clear of the lyric line.
+            let half_w = lyric.text.chars().count() as f32 * 3.25;
+            self.push_gap_item(staff, true, x - half_w, x + half_w, y - 7.0, y + 7.0);
             doc = doc.add(
                 Text::new(lyric.text.as_str())
                     .set("x", x)
@@ -9323,7 +9778,7 @@ impl Renderer {
         x: f32,
         mut min_y: f32,
         mut max_y: f32,
-        _stem: Option<StemInfo>,
+        stem: Option<StemInfo>,
         staff_y_offset: f32,
     ) -> (Document, f32, f32) {
         let mut last_pedal_y: Option<f32> = None;
@@ -9507,16 +9962,40 @@ impl Renderer {
                                     true
                                 };
                                 let mark_y = if is_above { min_y - 8.0 } else { max_y + 8.0 };
-                                doc = doc.add(
-                                    Text::new(text.as_str())
-                                        .set("x", x)
-                                        .set("y", mark_y)
-                                        .set("font-size", 10)
-                                        .set("text-anchor", "middle")
-                                        .set("dominant-baseline", "central")
-                                        .set("font-family", "serif")
-                                        .set("font-weight", "bold"),
-                                );
+                                let node = Text::new(text.as_str())
+                                    .set("x", x)
+                                    .set("font-size", 10)
+                                    .set("text-anchor", "middle")
+                                    .set("dominant-baseline", "central")
+                                    .set("font-family", "serif")
+                                    .set("font-weight", "bold");
+                                // On the beam side of a beamed note the beam isn't
+                                // drawn yet, and may end up past this stem's tip.
+                                match stem.filter(|s| !note.beams.is_empty() && s.is_up == is_above) {
+                                    Some(s) => {
+                                        let mut marks = self.pending_beam_marks.borrow_mut();
+                                        let stacked = marks
+                                            .iter()
+                                            .filter(|m| (m.stem_x - s.x).abs() < 0.5)
+                                            .count() as f32;
+                                        marks.push(PendingBeamMark {
+                                            x,
+                                            stem_x: s.x,
+                                            is_above,
+                                            gap: 8.0 + stacked * 12.0,
+                                            fallback_y: mark_y,
+                                            node,
+                                        });
+                                    }
+                                    None => {
+                                        self.placed_fingerings.borrow_mut().push((
+                                            self.current_part_y.get(),
+                                            x,
+                                            mark_y,
+                                        ));
+                                        doc = doc.add(node.set("y", mark_y));
+                                    }
+                                }
                                 if is_above {
                                     min_y -= 12.0;
                                 } else {
@@ -10238,8 +10717,19 @@ impl Renderer {
             .set("text-anchor", "middle")
             .set("dominant-baseline", "hanging")
             .set("font-family", self.font_family.as_str())
-            .set("transform", format!("scale(1, {})", scale_y))
-            .set("transform-origin", format!("{} {}", x, top_y));
+            // Stretch about (x, top_y) within the transform itself:
+            // `transform-origin` isn't honoured by every SVG renderer
+            // (librsvg, Inkscape), which then scale about the page origin
+            // and drop the wiggle far down the page.
+            .set(
+                "transform",
+                format!(
+                    "translate(0, {}) scale(1, {}) translate(0, {})",
+                    top_y,
+                    scale_y,
+                    -top_y
+                ),
+            );
 
         doc = doc.add(text);
         doc
@@ -10645,9 +11135,9 @@ impl Renderer {
         divisions: i32,
         time_pos: i32,
         voice_info: &MeasureVoiceInfo,
-    ) -> (Document, Option<StemInfo>, f32, f32, Vec<f32>, Vec<f32>) {
+    ) -> (Document, Option<StemInfo>, f32, f32, Vec<f32>, Vec<f32>, Vec<f32>) {
         if notes.is_empty() {
-            return (doc, None, 0.0, 0.0, Vec::new(), Vec::new());
+            return (doc, None, 0.0, 0.0, Vec::new(), Vec::new(), Vec::new());
         }
         if notes[0].rest && !slash_active {
             let duration_units = if divisions > 0 {
@@ -10674,6 +11164,15 @@ impl Renderer {
                 } else {
                     y_offset + 1.0 * self.staff_line_distance
                 }
+            } else if let Some(unpitched) = &notes[0].unpitched {
+                // Same height draw_rest gives a positioned rest.
+                let temp_pitch = crate::models::Pitch {
+                    step: unpitched.display_step.clone(),
+                    octave: unpitched.display_octave,
+                    alter: None,
+                };
+                let y = self.pitch_to_y(&temp_pitch, clef, y_offset);
+                self.rest_y_clear_of_voices(y, notes[0], time_pos, divisions, voice_info, clef, y_offset)
             } else {
                 let base_shift = match rest_type {
                     "whole" => 1.0,
@@ -10681,7 +11180,8 @@ impl Renderer {
                     _ => 2.0,
                 };
                 let voice_shift = Self::rest_voice_shift(notes[0], time_pos, divisions, voice_info);
-                y_offset + (base_shift + voice_shift) * self.staff_line_distance
+                let y = y_offset + (base_shift + voice_shift) * self.staff_line_distance;
+                self.rest_y_clear_of_voices(y, notes[0], time_pos, divisions, voice_info, clef, y_offset)
             };
             return (
                 self.draw_rest(
@@ -10703,10 +11203,12 @@ impl Renderer {
                 rest_y,
                 Vec::new(),
                 Vec::new(),
+                Vec::new(),
             );
         }
         let mut pitches_y = Vec::new();
         let mut note_xs = vec![x; notes.len()];
+        let mut note_ys = vec![0.0; notes.len()];
         let mut primary_y = 0.0;
         let is_grace = notes.iter().any(|n| n.grace.is_some());
         let scale = if is_grace { 0.7 } else { 1.0 };
@@ -10812,8 +11314,20 @@ impl Renderer {
         let is_cue_chord = notes.iter().any(|n| n.is_cue);
         let accidental_note_gap = if is_cue_chord { 7.0 } else { 9.0 };
         let accidental_column_spacing = if is_cue_chord { 8.0 } else { 10.0 };
-        let accidental_min_y_gap = self.staff_line_distance * 0.85;
-        let mut accidental_columns: Vec<(f32, f32)> = Vec::new(); // (x, last_y)
+        // Accidentals closer than a sixth would overlap, so they go in
+        // separate columns.
+        let accidental_min_y_gap = self.staff_line_distance * ACCIDENTAL_COLUMN_STEPS as f32 * 0.5;
+        // Accidentals already drawn on this staff near this onset (other
+        // voices), then this chord's own as they are placed.
+        let mut taken: Vec<(f32, f32)> = self
+            .placed_accidentals
+            .borrow()
+            .iter()
+            .filter(|&&(staff_y, ax, _)| {
+                (staff_y - y_offset).abs() < 0.5 && (ax - chord_left_edge).abs() < 60.0
+            })
+            .map(|&(_, ax, ay)| (ax, ay))
+            .collect();
         let mut accidental_x_by_note = vec![chord_left_edge - accidental_note_gap; notes.len()];
         for (idx, y, note) in &sorted_notes {
             let has_accidental = note.accidental.is_some()
@@ -10828,35 +11342,26 @@ impl Renderer {
             }
             // Accidentals sit left of the whole chord, including noteheads
             // displaced to the left of the stem (and never between a
-            // right-displaced notehead and the stem).
+            // right-displaced notehead and the stem); each one moves a
+            // column further left while it would hit one already placed.
             let desired_x = chord_left_edge - accidental_note_gap;
-            let mut chosen_idx = None;
-            for (i, (col_x, last_y)) in accidental_columns.iter_mut().enumerate() {
-                if *col_x <= desired_x && (y - *last_y).abs() >= accidental_min_y_gap {
-                    chosen_idx = Some(i);
-                    *last_y = *y;
-                    break;
-                }
+            let mut col_x = desired_x;
+            while taken.iter().any(|&(ax, ay)| {
+                (ax - col_x).abs() < accidental_column_spacing * 0.9
+                    && (ay - y).abs() < accidental_min_y_gap
+            }) {
+                col_x -= accidental_column_spacing;
             }
-            let idx_col = if let Some(i) = chosen_idx {
-                i
-            } else {
-                let new_x = if let Some((leftmost_x, _)) = accidental_columns
-                    .iter()
-                    .min_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))
-                {
-                    desired_x.min(leftmost_x - accidental_column_spacing)
-                } else {
-                    desired_x
-                };
-                accidental_columns.push((new_x, *y));
-                accidental_columns.len() - 1
-            };
-            accidental_x_by_note[*idx] = accidental_columns[idx_col].0;
+            taken.push((col_x, *y));
+            accidental_x_by_note[*idx] = col_x;
+            if !slash_active {
+                self.placed_accidentals.borrow_mut().push((y_offset, col_x, *y));
+            }
         }
 
         // 4. Render Noteheads, Accidentals, and Dots
         for (idx, y, note) in sorted_notes {
+            note_ys[idx] = y;
             if note.print_object == Some(false) {
                 continue;
             }
@@ -10905,6 +11410,7 @@ impl Renderer {
                     let mut tab_y = y_offset + ((s - 1) as f32 * self.staff_line_distance);
                     tab_y += 0.5 * self.staff_line_distance;
                     pitches_y.push(tab_y);
+                    note_ys[idx] = tab_y;
                     // The first note, or the first visible one if it is hidden.
                     if idx == 0 || pitches_y.len() == 1 {
                         primary_y = tab_y;
@@ -10968,7 +11474,9 @@ impl Renderer {
                     }
                 }
             }
-            if note.print_dot != Some(false) {
+            // TAB shows fret numbers without rhythm: a dot there would land at
+            // the pitch's notation-staff y, far below the TAB lines.
+            if note.print_dot != Some(false) && !is_tab {
                 for i in 0..dot_count {
                     let dot_x = dots_base_x + head_w + (i as f32 * 6.0 * scale);
                     let dot_y = if slash_active {
@@ -11086,7 +11594,7 @@ impl Renderer {
                 });
             }
         }
-        (doc, stem_info, x, primary_y, pitches_y, note_xs)
+        (doc, stem_info, x, primary_y, pitches_y, note_xs, note_ys)
     }
 
     fn process_fermatas(
@@ -11097,6 +11605,7 @@ impl Renderer {
         mut min_y: f32,
         mut max_y: f32,
         stem: Option<StemInfo>,
+        (staff_top, staff_bottom): (f32, f32),
     ) -> (Document, f32, f32) {
         for note in notes {
             for notation in &note.notations {
@@ -11105,9 +11614,12 @@ impl Renderer {
                     placement,
                 } = notation
                 {
-                    let is_inverted = note_type.as_deref() == Some("inverted");
-                    let is_above = if is_inverted {
+                    // The type names the drawn shape: an upright fermata sits
+                    // above the staff, an inverted one below, whatever the stem.
+                    let is_above = if note_type.as_deref() == Some("inverted") {
                         false
+                    } else if note_type.as_deref() == Some("upright") {
+                        true
                     } else if let Some(p) = placement.as_deref() {
                         p == "above"
                     } else if let Some(s) = stem {
@@ -11116,7 +11628,15 @@ impl Renderer {
                         true
                     };
                     let symbol = if is_above { "\u{E4C0}" } else { "\u{E4C1}" };
-                    let fermata_y = if is_above { min_y - 12.0 } else { max_y + 22.0 };
+                    // Outside the staff even over a note inside it.
+                    if is_above {
+                        min_y = min_y.min(staff_top - 5.0);
+                    } else {
+                        max_y = max_y.max(staff_bottom + 5.0);
+                    }
+                    // The glyph's baseline is its flat side: an upright fermata
+                    // is drawn above it, an inverted one below it.
+                    let fermata_y = if is_above { min_y - 6.0 } else { max_y + 6.0 };
                     doc = doc.add(
                         Text::new(symbol)
                             .set("x", x)
@@ -11508,15 +12028,45 @@ impl Renderer {
         x: f32,
         y: f32,
         stem: Option<StemInfo>,
-        active_ties: &mut HashMap<(String, i32), TieStartInfo>,
+        active_ties: &mut HashMap<(String, i32, i32), TieStartInfo>,
         note_xs: &[f32],
+        note_ys: &[f32],
     ) -> (Document, f32, f32) {
         let mut min_y = f32::MAX;
         let mut max_y = f32::MIN;
         for (idx, note) in notes.iter().enumerate() {
             if let Some(pitch) = &note.pitch {
-                let pitch_key = (pitch.step.clone(), pitch.octave);
+                let pitch_key = (pitch.step.clone(), pitch.octave, note.staff.unwrap_or(1));
                 let notehead_x = note_xs.get(idx).copied().unwrap_or(x);
+                // Each chord note ties from its own notehead, not the chord's.
+                let y = note_ys.get(idx).copied().unwrap_or(y);
+                let voice = note.voice.unwrap_or(1);
+                // A tie always ends on its voice's next note of the same pitch;
+                // files sometimes leave that note's stop out (e.g. grace notes
+                // of a written-out arpeggio tied into the chord). End it here
+                // rather than leave it open, drawn on to every system's end.
+                let has_stop = note
+                    .notations
+                    .iter()
+                    .any(|n| matches!(n, Notation::Tied { note_type } if note_type == "stop"));
+                if !has_stop
+                    && active_ties
+                        .get(&pitch_key)
+                        .is_some_and(|t| t.voice == voice && t.x < notehead_x - 1.0)
+                {
+                    let start_info = active_ties.remove(&pitch_key).unwrap();
+                    let end_tie_y = if start_info.is_above { y - 3.0 } else { y + 3.0 };
+                    doc = self.draw_tie(
+                        doc,
+                        start_info.x,
+                        start_info.y,
+                        notehead_x,
+                        end_tie_y,
+                        start_info.is_above,
+                    );
+                    min_y = min_y.min(start_info.y.min(end_tie_y) - 12.0);
+                    max_y = max_y.max(start_info.y.max(end_tie_y) + 12.0);
+                }
                 for notation in &note.notations {
                     if let Notation::Tied { note_type } = notation {
                         let is_above = if let Some(s) = stem { !s.is_up } else { true };
@@ -11530,6 +12080,7 @@ impl Renderer {
                                         y: tie_y,
                                         is_above,
                                         is_continuation: false,
+                                        voice,
                                     },
                                 );
                                 if is_above {
@@ -11689,7 +12240,9 @@ impl Renderer {
             max_y = max_y.max(max_pitch_y);
             let stem_x = stem.map(|s| s.x).unwrap_or(x);
             let notehead_x = note_xs.first().copied().unwrap_or(x);
-            {
+            // A wholly hidden group (a written-out trill's notes kept for
+            // playback) draws nothing for other marks to clear.
+            if notes.iter().any(|n| n.print_object != Some(false)) {
                 // Record this note first: when it ends a beam group, the beam
                 // just drawn sets its stem too.
                 self.placed_notes.borrow_mut().push(PlacedNote {
@@ -11975,6 +12528,33 @@ impl Renderer {
 
     /// Moves the stems of already placed notes onto the final tips of the beam
     /// groups just drawn.
+    /// Draws held beam-side marks whose beam has been drawn, just outside it;
+    /// with `all`, also the rest at the height their note gave them.
+    fn place_beam_marks(&self, mut doc: Document, beam_tips: &[BeamedStemTip], all: bool) -> Document {
+        let mut marks = self.pending_beam_marks.borrow_mut();
+        let mut kept = Vec::new();
+        for m in marks.drain(..) {
+            let tip = beam_tips
+                .iter()
+                .find(|b| (b.orig_x - m.stem_x).abs() < 0.5 && b.is_up == m.is_above);
+            let y = match tip {
+                Some(b) if m.is_above => Some(b.tip_y - m.gap),
+                Some(b) => Some(b.tip_y + b.beam_thickness + m.gap),
+                None if all => Some(m.fallback_y),
+                None => None,
+            };
+            match y {
+                Some(y) => {
+                    self.placed_fingerings.borrow_mut().push((self.current_part_y.get(), m.x, y));
+                    doc = doc.add(m.node.set("y", y));
+                }
+                None => kept.push(m),
+            }
+        }
+        *marks = kept;
+        doc
+    }
+
     fn apply_beam_tips_to_placed_notes(&self, beam_tips: &[BeamedStemTip]) {
         let mut placed = self.placed_notes.borrow_mut();
         // The beams just drawn belong to the current part (another part's
@@ -12000,82 +12580,104 @@ impl Renderer {
     /// sits just outside the notes at either end, tilted no more than 15°,
     /// then moved out as far as needed to clear every note in between.
     fn flush_pending_tuplets(&self, mut doc: Document) -> Document {
-        const END_GAP: f32 = 10.0;
-        const CLEARANCE: f32 = 10.0;
         let pending: Vec<PendingTuplet> = self.pending_tuplets.borrow_mut().drain(..).collect();
         for t in pending {
             let s = &t.start;
-            let (x1, x2) = (s.x.min(t.x2), s.x.max(t.x2));
-            let dir = if s.is_above { -1.0 } else { 1.0 };
-            let outer = |a: f32, b: f32| if s.is_above { a.min(b) } else { a.max(b) };
-            let near_top = s.top.min(t.top2) - 120.0;
-            let near_bottom = s.bottom.max(t.bottom2) + 120.0;
-            // Extreme points of the notes under the tuplet on its side.
-            let mut pts: Vec<(f32, f32)> = Vec::new();
-            for pn in self.placed_notes.borrow().iter() {
-                if pn.part_y != self.current_part_y.get()
-                    || pn.staff != s.staff
-                    || pn.x < x1 - 8.0
-                    || pn.x > x2 + 8.0
-                    || pn.bottom < near_top
-                    || pn.top > near_bottom
-                {
-                    continue;
-                }
-                pts.push((pn.x, if s.is_above { pn.top } else { pn.bottom }));
-                if let Some((sx, tip, up)) = pn.stem {
-                    if up == s.is_above {
-                        pts.push((sx, tip));
-                    }
-                }
-            }
-            // The notes drawn at an end (with stems as their beam finally set
-            // them); the extent recorded with the tuplet's start or stop note
-            // predates the beam, so it only stands in when none was found.
-            let end_extreme = |x: f32, own: f32| {
-                pts.iter()
-                    .filter(|p| (p.0 - x).abs() < 8.0)
-                    .map(|p| p.1)
-                    .reduce(outer)
-                    .unwrap_or(own)
-            };
-            let own1 = if s.is_above { s.top } else { s.bottom };
-            let own2 = if s.is_above { t.top2 } else { t.bottom2 };
-            let offset = dir * (END_GAP + s.level as f32 * 10.0);
-            let mut y1 = end_extreme(s.x, own1) + offset;
-            let mut y2 = end_extreme(t.x2, own2) + offset;
-            // Clamp the slope to 15° (like a beam), keeping the outer end.
-            let dx = t.x2 - s.x;
-            if dx.abs() > 0.1 {
-                let max_dy = 0.2679 * dx.abs();
-                if (y2 - y1).abs() > max_dy {
-                    if outer(y1, y2) == y1 {
-                        y2 = y1 + (y2 - y1).signum() * max_dy;
-                    } else {
-                        y1 = y2 + (y1 - y2).signum() * max_dy;
-                    }
-                }
-                // Move the whole line out until every note clears it.
-                let mut shift: f32 = 0.0;
-                for &(px, py) in &pts {
-                    let tt = ((px - s.x) / dx).clamp(0.0, 1.0);
-                    let line_y = y1 + (y2 - y1) * tt;
-                    let need = if s.is_above {
-                        line_y - (py - CLEARANCE)
-                    } else {
-                        (py + CLEARANCE) - line_y
-                    };
-                    shift = shift.max(need);
-                }
-                y1 += dir * shift;
-                y2 += dir * shift;
-            }
+            let (y1, y2) = self.tuplet_line(&t);
             doc = self.draw_tuplet(
                 doc, s.x, y1, t.x2, y2, s.is_above, s.number, s.bracket, s.show_number,
             );
             self.note_drawn_extent(y1.min(y2) - 10.0, y1.max(y2) + 10.0);
+            let (x1, x2) = (s.x.min(t.x2), s.x.max(t.x2));
+            let (top, bottom) = (y1.min(y2) - TUPLET_REACH, y1.max(y2) + TUPLET_REACH);
+            self.placed_tuplets.borrow_mut().push((
+                self.current_part_y.get(),
+                s.staff,
+                x1,
+                x2,
+                top,
+                bottom,
+            ));
+            // A bracket in the gap between staves: the other staff's hairpins
+            // and texts there clear it (by widening the gap if need be).
+            self.push_gap_item(s.staff, !s.is_above, x1, x2, top, bottom);
         }
         doc
+    }
+
+    /// Heights (at its start and stop x) of a finished tuplet's bracket line:
+    /// just outside the notes under it on its side, as their stems and beams
+    /// are drawn now. Slurs go outside the bracket, not the other way round.
+    fn tuplet_line(&self, t: &PendingTuplet) -> (f32, f32) {
+        const END_GAP: f32 = 10.0;
+        const CLEARANCE: f32 = 10.0;
+        let s = &t.start;
+        let (x1, x2) = (s.x.min(t.x2), s.x.max(t.x2));
+        let dir = if s.is_above { -1.0 } else { 1.0 };
+        let outer = |a: f32, b: f32| if s.is_above { a.min(b) } else { a.max(b) };
+        let near_top = s.top.min(t.top2) - 120.0;
+        let near_bottom = s.bottom.max(t.bottom2) + 120.0;
+        // Extreme points of the notes under the tuplet on its side.
+        let mut pts: Vec<(f32, f32)> = Vec::new();
+        for pn in self.placed_notes.borrow().iter() {
+            if pn.part_y != self.current_part_y.get()
+                || pn.staff != s.staff
+                || pn.x < x1 - 8.0
+                || pn.x > x2 + 8.0
+                || pn.bottom < near_top
+                || pn.top > near_bottom
+            {
+                continue;
+            }
+            pts.push((pn.x, if s.is_above { pn.top } else { pn.bottom }));
+            if let Some((sx, tip, up)) = pn.stem {
+                if up == s.is_above {
+                    pts.push((sx, tip));
+                }
+            }
+        }
+        // The notes drawn at an end (with stems as their beam finally set
+        // them); the extent recorded with the tuplet's start or stop note
+        // predates the beam, so it only stands in when none was found.
+        let end_extreme = |x: f32, own: f32| {
+            pts.iter()
+                .filter(|p| (p.0 - x).abs() < 8.0)
+                .map(|p| p.1)
+                .reduce(outer)
+                .unwrap_or(own)
+        };
+        let own1 = if s.is_above { s.top } else { s.bottom };
+        let own2 = if s.is_above { t.top2 } else { t.bottom2 };
+        let offset = dir * (END_GAP + s.level as f32 * 10.0);
+        let mut y1 = end_extreme(s.x, own1) + offset;
+        let mut y2 = end_extreme(t.x2, own2) + offset;
+        // Clamp the slope to 15° (like a beam), keeping the outer end.
+        let dx = t.x2 - s.x;
+        if dx.abs() > 0.1 {
+            let max_dy = 0.2679 * dx.abs();
+            if (y2 - y1).abs() > max_dy {
+                if outer(y1, y2) == y1 {
+                    y2 = y1 + (y2 - y1).signum() * max_dy;
+                } else {
+                    y1 = y2 + (y1 - y2).signum() * max_dy;
+                }
+            }
+            // Move the whole line out until every note clears it.
+            let mut shift: f32 = 0.0;
+            for &(px, py) in &pts {
+                let tt = ((px - s.x) / dx).clamp(0.0, 1.0);
+                let line_y = y1 + (y2 - y1) * tt;
+                let need = if s.is_above {
+                    line_y - (py - CLEARANCE)
+                } else {
+                    (py + CLEARANCE) - line_y
+                };
+                shift = shift.max(need);
+            }
+            y1 += dir * shift;
+            y2 += dir * shift;
+        }
+        (y1, y2)
     }
 
     /// Draws the slurs whose end was known before their start (see
@@ -12374,6 +12976,79 @@ impl Renderer {
         if ![x1, y1, x2, y2].iter().all(|v| v.is_finite() && v.abs() < 1e6) {
             return doc;
         }
+        // Slurs already drawn inside this one's span on its staff (a short
+        // phrase within a long one) are passed over like notes: sample their
+        // curves as obstacles, so the two don't cross.
+        let nested: Vec<(f32, f32)> = self
+            .placed_slurs
+            .borrow()
+            .iter()
+            .filter(|sl| {
+                !sl.cross_staff
+                    && sl.staff == staff
+                    && (sl.part_y - self.current_part_y.get()).abs() < 0.5
+                    && sl.x1 >= x1 - 2.0
+                    && sl.x2 <= x2 + 2.0
+                    && (sl.x1 - x1).abs() + (sl.x2 - x2).abs() > 4.0
+            })
+            .flat_map(|sl| (1..8).map(move |i| {
+                let x = sl.x1 + (sl.x2 - sl.x1) * i as f32 / 8.0;
+                (x, sl.y_at(x))
+            }))
+            .collect();
+        // Tuplet brackets under the slur, drawn or still waiting for the
+        // measure's end: the slur goes over them (notes, then brackets, then
+        // slurs, outward). Each as (x1, x2, edge y at x1, edge y at x2), the
+        // edge being the one on the slur's side; a bracket on the other side
+        // of the notes lies inside the slur's curve anyway.
+        let part_y = self.current_part_y.get();
+        let reach = if is_above { -TUPLET_REACH } else { TUPLET_REACH };
+        let mut bracket_segs: Vec<(f32, f32, f32, f32)> = Vec::new();
+        for &(t_part_y, t_staff, tx1, tx2, top, bottom) in self.placed_tuplets.borrow().iter() {
+            if (t_part_y - part_y).abs() < 0.5 && t_staff == staff && tx1 < x2 && tx2 > x1 {
+                let edge = if is_above { top } else { bottom };
+                bracket_segs.push((tx1, tx2, edge, edge));
+            }
+        }
+        for t in self.pending_tuplets.borrow().iter() {
+            let st = &t.start;
+            if st.staff != staff || st.x.min(t.x2) >= x2 || st.x.max(t.x2) <= x1 {
+                continue;
+            }
+            let (ty1, ty2) = self.tuplet_line(t);
+            bracket_segs.push((st.x, t.x2, ty1 + reach, ty2 + reach));
+        }
+        let brackets: Vec<(f32, f32)> = bracket_segs
+            .iter()
+            .flat_map(|&(bx1, bx2, by1, by2)| {
+                (0..=4).map(move |i| {
+                    let f = i as f32 / 4.0;
+                    (bx1 + (bx2 - bx1) * f, by1 + (by2 - by1) * f)
+                })
+            })
+            .collect();
+        // An end inside a bracket's span starts beyond the bracket too, so the
+        // slur doesn't cut through its hooks.
+        let (x1, y1, x2, y2) = {
+            let beyond = |x: f32, y: f32| {
+                bracket_segs
+                    .iter()
+                    .filter(|&&(bx1, bx2, _, _)| x >= bx1.min(bx2) - 2.0 && x <= bx1.max(bx2) + 2.0)
+                    .map(|&(bx1, bx2, by1, by2)| {
+                        let f = if (bx2 - bx1).abs() > 0.1 { ((x - bx1) / (bx2 - bx1)).clamp(0.0, 1.0) } else { 0.0 };
+                        by1 + (by2 - by1) * f + if is_above { -3.0 } else { 3.0 }
+                    })
+                    .fold(y, |acc, e| if is_above { acc.min(e) } else { acc.max(e) })
+            };
+            (x1, beyond(x1, y1), x2, beyond(x2, y2))
+        };
+        let merged: Vec<(f32, f32)>;
+        let obstacles = if nested.is_empty() && brackets.is_empty() {
+            obstacles
+        } else {
+            merged = obstacles.iter().copied().chain(nested).chain(brackets).collect();
+            &merged[..]
+        };
         let dx = x2 - x1;
         let dy = y2 - y1;
         let distance = (dx * dx + dy * dy).sqrt();
@@ -13945,6 +14620,19 @@ impl Renderer {
                             t,
                             t + to_units(n.duration, divisions),
                         ));
+                        if n.rest {
+                            let step = n.unpitched.as_ref().and_then(|u| {
+                                "CDEFGAB"
+                                    .find(u.display_step.as_str())
+                                    .map(|i| u.display_octave * 7 + i as i32)
+                            });
+                            info.rest_spans.entry(staff).or_default().push((
+                                voice,
+                                t,
+                                t + to_units(n.duration, divisions),
+                                step,
+                            ));
+                        }
                     }
                     // A hidden note draws no notehead, so it can't collide.
                     if !n.rest && n.grace.is_none() && n.print_object != Some(false) {
@@ -13976,6 +14664,12 @@ impl Renderer {
                                 .entry(voice)
                                 .or_default()
                                 .push(step);
+                            info.head_spans.entry(staff).or_default().push((
+                                voice,
+                                t,
+                                t + to_units(n.duration, divisions),
+                                step,
+                            ));
                         }
                     }
                     if !n.is_chord && n.grace.is_none() {
@@ -14062,6 +14756,109 @@ impl Renderer {
         }
     }
 
+    /// Columns needed for accidentals on these diatonic steps: each goes in
+    /// the first column whose accidentals are all a sixth or more away.
+    pub(crate) fn accidental_column_count(steps: &[i32]) -> usize {
+        let mut sorted = steps.to_vec();
+        sorted.sort_unstable_by(|a, b| b.cmp(a));
+        let mut columns: Vec<Vec<i32>> = Vec::new();
+        for s in sorted {
+            match columns
+                .iter_mut()
+                .find(|c| c.iter().all(|o| (o - s).abs() >= ACCIDENTAL_COLUMN_STEPS))
+            {
+                Some(c) => c.push(s),
+                None => columns.push(vec![s]),
+            }
+        }
+        columns.len().max(1)
+    }
+
+    /// Moves a rest that shares its time with other voices (`y` already
+    /// nudged toward its side by `rest_voice_shift`) further out, by whole
+    /// staff spaces, until it clears their noteheads: above them for the upper
+    /// voice, below for the others.
+    fn rest_y_clear_of_voices(
+        &self,
+        y: f32,
+        note: &Note,
+        time_pos: i32,
+        divisions: i32,
+        voice_info: &MeasureVoiceInfo,
+        clef: &Clef,
+        y_offset: f32,
+    ) -> f32 {
+        // Rest glyph half-height plus a notehead's half-height and a gap,
+        // in staff spaces.
+        const CLEARANCE: f32 = 2.5;
+        // Two rest glyphs' half-heights and a gap.
+        const REST_CLEARANCE: f32 = 3.0;
+        let shift = Self::rest_voice_shift(note, time_pos, divisions, voice_info);
+        // On TAB, pitches aren't where the fret numbers sit.
+        if shift == 0.0 || clef.sign == "TAB" {
+            return y;
+        }
+        let voice = note.voice.unwrap_or(1);
+        let end = time_pos
+            + (note.duration as f64 * 10080.0 / divisions.max(1) as f64).round() as i32;
+        let Some(heads) = voice_info.head_spans.get(&note.staff.unwrap_or(1)) else {
+            return y;
+        };
+        let step_y = |step: i32| {
+            let i = step.rem_euclid(7) as usize;
+            let pitch = crate::models::Pitch {
+                step: "CDEFGAB"[i..i + 1].to_string(),
+                octave: step.div_euclid(7),
+                alter: None,
+            };
+            self.pitch_to_y(&pitch, clef, y_offset)
+        };
+        let space = self.staff_line_distance;
+        // (y, clearance) of what this rest must stay clear of.
+        let mut obstacles: Vec<(f32, f32)> = heads
+            .iter()
+            .filter(|&&(v, s, e, _)| v != voice && s < end && time_pos < e)
+            .map(|&(_, _, _, step)| (step_y(step), CLEARANCE))
+            .collect();
+        // A lower voice's rest also steps under an upper voice's rest at the
+        // same time (only one of the two moves, so they don't fly apart).
+        if shift > 0.0 {
+            if let Some(rests) = voice_info.rest_spans.get(&note.staff.unwrap_or(1)) {
+                let middle = y_offset + 2.0 * space;
+                obstacles.extend(
+                    rests
+                        .iter()
+                        .filter(|&&(v, s, e, _)| v < voice && s < end && time_pos < e)
+                        .map(|&(_, _, _, step)| {
+                            (step.map_or(middle - space, step_y), REST_CLEARANCE)
+                        }),
+                );
+            }
+        }
+        if obstacles.is_empty() {
+            return y;
+        }
+        let mut y = y;
+        if shift < 0.0 {
+            let limit = obstacles
+                .iter()
+                .map(|&(oy, c)| oy - c * space)
+                .fold(f32::MAX, f32::min);
+            while y > limit + 0.01 {
+                y -= space;
+            }
+        } else {
+            let limit = obstacles
+                .iter()
+                .map(|&(oy, c)| oy + c * space)
+                .fold(f32::MIN, f32::max);
+            while y < limit - 0.01 {
+                y += space;
+            }
+        }
+        y
+    }
+
     fn rest_voice_shift(
         note: &Note,
         time_pos: i32,
@@ -14101,6 +14898,9 @@ impl Renderer {
         time_pos: i32,
         voice_info: &MeasureVoiceInfo,
     ) -> Document {
+        if note.print_object == Some(false) {
+            return doc;
+        }
         let duration_units = if divisions > 0 {
             note.duration as f32 * 10080.0 / divisions as f32
         } else {
@@ -14149,7 +14949,9 @@ impl Renderer {
                 octave: unpitched.display_octave,
                 alter: None,
             };
-            self.pitch_to_y(&temp_pitch, clef, y_offset)
+            // The exporter's position may still sit on another voice's note.
+            let y = self.pitch_to_y(&temp_pitch, clef, y_offset);
+            self.rest_y_clear_of_voices(y, note, time_pos, divisions, voice_info, clef, y_offset)
         } else {
             let base_shift = match note_type {
                 "whole" => 1.0, // hangs from line 4
@@ -14157,7 +14959,8 @@ impl Renderer {
                 _ => 2.0,       // centered on line 3
             };
             let voice_shift = Self::rest_voice_shift(note, time_pos, divisions, voice_info);
-            y_offset + (base_shift + voice_shift) * self.staff_line_distance
+            let y = y_offset + (base_shift + voice_shift) * self.staff_line_distance;
+            self.rest_y_clear_of_voices(y, note, time_pos, divisions, voice_info, clef, y_offset)
         };
 
         doc = doc.add(

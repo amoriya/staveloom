@@ -12,7 +12,9 @@ use staveloom_core::parser::parse_in_memory;
 use staveloom_core::renderer::{Renderer, SpacingStrategy};
 
 fn note(step: &str, duration: u32, kind: &str, lyric: Option<&str>) -> String {
-    let lyric = lyric.map_or(String::new(), |l| format!("<lyric><text>{l}</text></lyric>"));
+    let lyric = lyric.map_or(String::new(), |l| {
+        format!("<lyric><text>{l}</text></lyric>")
+    });
     format!(
         "<note><pitch><step>{step}</step><octave>4</octave></pitch>\
          <duration>{duration}</duration><type>{kind}</type>{lyric}</note>"
@@ -63,7 +65,11 @@ fn test_score() -> String {
         } else {
             ""
         };
-        body += &format!("<measure number=\"{}\">{attributes}{}</measure>", i + 1, notes.concat());
+        body += &format!(
+            "<measure number=\"{}\">{attributes}{}</measure>",
+            i + 1,
+            notes.concat()
+        );
     }
     format!(
         "<?xml version=\"1.0\"?><score-partwise version=\"3.1\"><part-list>\
@@ -87,11 +93,18 @@ fn noteheads(strategy: SpacingStrategy) -> Vec<Vec<f32>> {
         let tag_start = svg[..pos].rfind("<text").expect("glyph inside <text>");
         let tag = &svg[tag_start..pos];
         let x = tag.split(" x=\"").nth(1).and_then(|r| r.split('"').next());
-        xs.push(x.and_then(|v| v.parse::<f32>().ok()).expect("notehead has x"));
+        xs.push(
+            x.and_then(|v| v.parse::<f32>().ok())
+                .expect("notehead has x"),
+        );
     }
     xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let counts = [4, 6, 1, 4, 3];
-    assert_eq!(xs.len(), counts.iter().sum::<usize>(), "one notehead per note");
+    assert_eq!(
+        xs.len(),
+        counts.iter().sum::<usize>(),
+        "one notehead per note"
+    );
     let mut measures = Vec::new();
     let mut rest = xs.as_slice();
     for n in counts {
@@ -116,8 +129,14 @@ fn compact_spaces_notes_alike_whatever_their_duration() {
     // Half -> quarter and quarter -> eighth (no flag before them) match the
     // quarters of another measure in the same system.
     let m1 = gaps(&m[0]);
-    assert!((m1[0] - quarter).abs() < 1.0, "half spaced like a quarter: {m1:?} vs {quarter}");
-    assert!((m1[1] - quarter).abs() < 1.0, "first measure stretched alike: {m1:?} vs {quarter}");
+    assert!(
+        (m1[0] - quarter).abs() < 1.0,
+        "half spaced like a quarter: {m1:?} vs {quarter}"
+    );
+    assert!(
+        (m1[1] - quarter).abs() < 1.0,
+        "first measure stretched alike: {m1:?} vs {quarter}"
+    );
 }
 
 #[test]
@@ -130,15 +149,30 @@ fn elastic_spaces_notes_by_duration() {
     let m1 = gaps(&m[0]);
     // The system's first measure (with clef, key and time) is stretched
     // like the others.
-    assert!((m1[1] - quarter).abs() < 1.0, "quarter in measure 1: {m1:?} vs {quarter}");
+    assert!(
+        (m1[1] - quarter).abs() < 1.0,
+        "quarter in measure 1: {m1:?} vs {quarter}"
+    );
     let ratio = m1[0] / quarter;
-    assert!((ratio - 2f32.powf(0.6)).abs() < 0.08, "half / quarter = {ratio}");
+    assert!(
+        (ratio - 2f32.powf(0.6)).abs() < 0.08,
+        "half / quarter = {ratio}"
+    );
     // Short notes never get more room than a quarter, flags included.
-    assert!(m1[2] < quarter, "eighth narrower than a quarter: {m1:?} vs {quarter}");
+    assert!(
+        m1[2] < quarter,
+        "eighth narrower than a quarter: {m1:?} vs {quarter}"
+    );
     for g in &gaps(&m[1])[..3] {
-        assert!(*g < quarter, "16th narrower than a quarter: {g} vs {quarter}");
+        assert!(
+            *g < quarter,
+            "16th narrower than a quarter: {g} vs {quarter}"
+        );
     }
     // Long lyrics push their notes apart.
     let m5 = gaps(&m[4]);
-    assert!(m5[0] > quarter * 1.5, "lyrics make room: {m5:?} vs {quarter}");
+    assert!(
+        m5[0] > quarter * 1.5,
+        "lyrics make room: {m5:?} vs {quarter}"
+    );
 }

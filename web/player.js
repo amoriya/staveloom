@@ -669,8 +669,12 @@
       return;
     }
 
+    // Output latency only delays what is heard while playing; a stopped
+    // player's position is exact.
     const currTime =
-      time ?? midiPlayer.currentTime + midiPlayer.audioLatency;
+      time ??
+      midiPlayer.currentTime +
+        (midiPlayer.isPlaying ? midiPlayer.audioLatency : 0);
     const pos = getCursorPosition(currTime, beats);
 
     if (pos) {

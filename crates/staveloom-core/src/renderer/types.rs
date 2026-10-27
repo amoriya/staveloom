@@ -106,12 +106,30 @@ pub(crate) struct BeamedStemTip {
     pub cross_staff: bool,
 }
 
+/// A mark held until its beam is drawn (see `Renderer::place_beam_marks`).
+pub(crate) struct PendingBeamMark {
+    /// The mark's x (its note's).
+    pub x: f32,
+    /// Stem x as drawn with the note, matched against `BeamedStemTip::orig_x`.
+    pub stem_x: f32,
+    pub is_above: bool,
+    /// Distance from the beam to the mark's centre.
+    pub gap: f32,
+    /// Height from the note alone, used if no beam turns up.
+    pub fallback_y: f32,
+    /// The mark, complete but for its `y`.
+    pub node: svg::node::element::Text,
+}
+
 #[derive(Clone)]
 pub(crate) struct TieStartInfo {
     pub x: f32,
     pub y: f32,
     pub is_above: bool,
     pub is_continuation: bool,
+    /// Voice of the start note: a tie runs to that voice's next note of the
+    /// same pitch.
+    pub voice: i32,
 }
 
 #[derive(Clone)]
@@ -169,6 +187,14 @@ pub(crate) struct MeasureVoiceInfo {
     /// staff, used to tell whether a rest actually shares its beat with
     /// another voice.
     pub voice_spans: HashMap<i32, Vec<(i32, i32, i32)>>,
+    /// Every visible notehead on each staff as (voice, start, end, diatonic
+    /// step = octave * 7 + step), so a rest sharing its beat with another
+    /// voice can be moved clear of that voice's notes.
+    pub head_spans: HashMap<i32, Vec<(i32, i32, i32, i32)>>,
+    /// Every visible rest on each staff as (voice, start, end, diatonic step
+    /// of its `<display-step>` if the file places it), so rests of two voices
+    /// at the same time can be kept apart.
+    pub rest_spans: HashMap<i32, Vec<(i32, i32, i32, Option<i32>)>>,
     /// Horizontal displacement, in notehead widths, for chord groups keyed by
     /// (staff, time position, voice) whose noteheads would overlap another
     /// voice's (unison or second) at the same onset. Equal-duration voices

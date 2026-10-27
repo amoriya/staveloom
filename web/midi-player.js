@@ -401,7 +401,10 @@ class MidiPlayerController {
         // Create or reuse Sequencer
         const { Sequencer } = await import('./lib/spessasynth_lib.min.js');
         if (!this._seq) {
-            this._seq = new Sequencer(this._synth);
+            // skipToFirstNoteOn (the library default) would start the song at
+            // its first note, so a score opening with rests would load with
+            // the cursor past beat 0 and play from there.
+            this._seq = new Sequencer(this._synth, { skipToFirstNoteOn: false });
             this._seq.eventHandler.addEvent('songEnded', 'staveloom-player', () => {
                 if (this.onEnded) this.onEnded();
             });

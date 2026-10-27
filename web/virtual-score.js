@@ -36,6 +36,8 @@ class VirtualScoreRenderer {
     // For ≤ COMBINE_THRESHOLD systems, single-SVG memory is always better.
     if (systems.length <= COMBINE_THRESHOLD) {
       this.loadSingle(this._combineSystems(systems));
+      // Each system's band in the combined SVG, in renderer units.
+      this._singleSlots = systems.map((s) => ({ y: s.y_offset, h: s.height }));
       return;
     }
 
@@ -151,26 +153,75 @@ class VirtualScoreRenderer {
   // Called on every cursor update (not just when the system changes), so it
   // must be a cheap no-op when the cursor is already fully visible.
   scrollToSystem(systemIndex) {
-    if (this._singleMode) {
-      // Combined single-SVG mode: the cursor is already at its new position.
-      const cursor = this.container.querySelector("#playback-cursor");
-      if (!cursor || cursor.classList.contains("hidden")) return;
-      this._scrollElementIntoView(cursor);
-      return;
-    }
-    const wrapper = this.wrappers[systemIndex];
-    if (!wrapper) return;
-    // Prefer the cursor's own vertical span (all parts stacked at this
-    // beat) — that's what actually needs to be visible, and it's the
-    // signal for "too many parts to show at once" below. Fall back to the
-    // whole system wrapper if the cursor isn't mounted yet.
-    const cursor = wrapper.querySelector("#playback-cursor");
-    this._scrollElementIntoView(cursor && !cursor.classList.contains("hidden") ? cursor : wrapper);
+    const root = this._singleMode
+      ? this.container
+      : this.wrappers[systemIndex];
+    if (!root) return;
+    const cursor = root.querySelector("#playback-cursor");
+    const shown = cursor && !cursor.classList.contains("hidden") ? cursor : null;
+    if (this._singleMode && !shown) return;
+    // The system's drawn content: notes, slurs and marks above the top
+    // staff reach well past the cursor's span, which starts at that staff.
+    const content = this._singleMode
+      ? root.querySelector(`g#s${systemIndex}`)
+      : root.querySelector("svg > g");
+    const span = this._contentSpan(content, systemIndex);
+    if (span) this._scrollSpanIntoView(span, content);
+    else this._scrollElementIntoView(shown || root);
   }
 
   // One staff's height in renderer coordinate units (4 line-gaps at the
   // default staff_line_distance of 10 — see Renderer::default()).
   static STAFF_HEIGHT_UNITS = 40;
+
+  // Renderer units → screen px for the SVG holding `el`.
+  _pxPerUnit(el) {
+    const svgEl =
+      (el.closest && el.closest("svg")) ||
+      (el.querySelector && el.querySelector("svg"));
+    const svgHeightAttr = svgEl ? parseFloat(svgEl.getAttribute("height")) : 0;
+    return svgEl && svgHeightAttr
+      ? svgEl.getBoundingClientRect().height / svgHeightAttr
+      : 1;
+  }
+
+  // Screen top/bottom of what `content` draws within its system's band. The
+  // group's box alone can't be used: it also counts parts lying outside the
+  // band, e.g. a slur's continuation drawn far above and clipped away.
+  _contentSpan(content, systemIndex) {
+    if (!content) return null;
+    const box = content.getBoundingClientRect();
+    if (box.height <= 0) return null;
+    let band;
+    if (this._singleMode) {
+      const svgEl = content.closest("svg");
+      const r = svgEl.getBoundingClientRect();
+      const slot = this._singleSlots && this._singleSlots[systemIndex];
+      const ppu = this._pxPerUnit(content);
+      band = slot
+        ? { top: r.top + slot.y * ppu, bottom: r.top + (slot.y + slot.h) * ppu }
+        : { top: r.top, bottom: r.bottom };
+    } else {
+      band = this.wrappers[systemIndex].getBoundingClientRect();
+    }
+    const clamp = (v) => Math.min(Math.max(v, band.top), band.bottom);
+    return { top: clamp(box.top), bottom: clamp(box.bottom) };
+  }
+
+  // Scrolls a system's content span so its top sits just under the viewport
+  // top, unless it is already fully visible. A system taller than the
+  // viewport can't be, so its top (the upper parts and what rises above
+  // them) stays pinned there.
+  _scrollSpanIntoView(span, content) {
+    const rootRect = this.scrollRoot.getBoundingClientRect();
+    const pad = 0.25 * VirtualScoreRenderer.STAFF_HEIGHT_UNITS * this._pxPerUnit(content);
+    const fullyVisible =
+      span.top >= rootRect.top && span.bottom <= rootRect.bottom;
+    const delta = span.top - rootRect.top - pad;
+    if (!fullyVisible && Math.abs(delta) >= 1) {
+      this.scrollRoot.scrollTop += delta;
+    }
+  }
 
   // Scrolls `el` fully into view if it isn't already, aligning its top to
   // the viewport top with a staff-height's worth of headroom so the system
@@ -182,15 +233,7 @@ class VirtualScoreRenderer {
     const fullyVisible =
       elRect.top >= rootRect.top && elRect.bottom <= rootRect.bottom;
     if (fullyVisible) return;
-    const svgEl =
-      (el.closest && el.closest("svg")) ||
-      (el.querySelector && el.querySelector("svg"));
-    const svgHeightAttr = svgEl ? parseFloat(svgEl.getAttribute("height")) : 0;
-    const pxPerUnit =
-      svgEl && svgHeightAttr
-        ? svgEl.getBoundingClientRect().height / svgHeightAttr
-        : 1;
-    const margin = VirtualScoreRenderer.STAFF_HEIGHT_UNITS * pxPerUnit;
+    const margin = VirtualScoreRenderer.STAFF_HEIGHT_UNITS * this._pxPerUnit(el);
     this.scrollRoot.scrollTop += elRect.top - rootRect.top - margin;
   }
 
@@ -220,6 +263,7 @@ class VirtualScoreRenderer {
     }
     this.container.innerHTML = "";
     this.systems = [];
+    this._singleSlots = null;
     this.wrappers = [];
     this.mounted.clear();
     this._cursorSystemIndex = -1;

@@ -359,7 +359,11 @@ fn test_midi_corpus_roundtrip() {
         }
     }
 
-    assert!(tested > 0, "no .mid files found under {}", midi_dir.display());
+    assert!(
+        tested > 0,
+        "no .mid files found under {}",
+        midi_dir.display()
+    );
     assert!(
         failures.is_empty(),
         "{}/{tested} MIDI samples failed roundtrip:\n\n{}",

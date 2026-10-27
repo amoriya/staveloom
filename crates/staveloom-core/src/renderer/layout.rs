@@ -102,6 +102,9 @@ impl super::Renderer {
                     let mut num_staves_sim = *global_staves.get(p_id).unwrap_or(&1);
                     let mut current_clefs_sim = global_clefs.get(p_id).cloned().unwrap_or_default();
                     let mut pending_grace_w = 0.0;
+                    // (onset, staff) -> diatonic steps of the accidentals there,
+                    // across voices, to count the accidental columns needed.
+                    let mut accidental_steps: HashMap<(i32, i32), Vec<i32>> = HashMap::new();
 
                     if let Some(attr) = &measure.attributes {
                         if let Some(count) = attr.multiple_rest {
@@ -164,6 +167,20 @@ impl super::Renderer {
                                     } else {
                                         0.0
                                     };
+                                    let step = n.pitch.as_ref().and_then(|p| {
+                                        "CDEFGAB".find(p.step.as_str()).map(|i| p.octave * 7 + i as i32)
+                                    });
+                                    if let (true, Some(step), false) =
+                                        (has_accid_val, step, n.print_object == Some(false))
+                                    {
+                                        let steps = accidental_steps
+                                            .entry((time, n.staff.unwrap_or(1)))
+                                            .or_default();
+                                        steps.push(step);
+                                        let columns = Self::accidental_column_count(steps);
+                                        // Matches accidental_column_spacing in draw_chord_group_at.
+                                        prefix += (columns - 1) as f32 * 10.0;
+                                    }
                                     if has_arpeggio {
                                         prefix += self.arpeggio_prefix_bonus;
                                     }

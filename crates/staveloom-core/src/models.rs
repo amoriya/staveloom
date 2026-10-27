@@ -185,14 +185,14 @@ pub struct Repeat {
     pub direction: String, // "forward" or "backward"
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct Direction {
     pub placement: Option<String>,
     pub types: Vec<DirectionType>,
     pub staff: Option<i32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum DirectionType {
     Words(String),
     Dynamics(Vec<String>),
@@ -210,7 +210,7 @@ pub enum DirectionType {
     Other(String),
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct DashesMark {
     pub dashes_type: String, // "start", "stop", "continue"
     pub number: Option<i32>,
@@ -218,28 +218,28 @@ pub struct DashesMark {
     pub space_length: Option<f32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct PedalMark {
     pub pedal_type: String, // "start", "stop", "change", "continue", "resume", "discontinue"
     pub line: bool,
     pub number: Option<i32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct OctaveShiftMark {
     pub shift_type: String, // "up", "down", "stop", "continue"
     pub number: Option<i32>,
     pub size: i32, // e.g. 8, 15
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct WedgeMark {
     pub wedge_type: String, // "crescendo", "diminuendo", "stop", "continue"
     pub number: Option<i32>,
     pub spread: Option<f32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct BracketMark {
     pub bracket_type: String,
     pub number: Option<i32>,
@@ -247,7 +247,7 @@ pub struct BracketMark {
     pub line_type: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct MetronomeMark {
     pub beat_unit: String,
     pub beat_unit_dot: i32,
@@ -260,7 +260,7 @@ pub struct MetronomeMark {
     pub relation: Option<String>, // "equals", etc.
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct MetronomeNote {
     pub beat_unit: String,
     pub dots: i32,
@@ -268,7 +268,7 @@ pub struct MetronomeNote {
     pub tuplet: Option<MetronomeTuplet>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct MetronomeTuplet {
     pub tuplet_type: String,         // "start", "stop"
     pub bracket: Option<String>,     // "yes", "no"
@@ -389,7 +389,7 @@ pub struct Clef {
     pub clef_octave_change: Option<i32>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub struct Beam {
     pub number: i32,
     pub value: BeamValue,

@@ -58,7 +58,12 @@ U+E840,U+E841,U+E842,U+E870,U+E871,U+E873,\
 U+EB60,U+EB61,U+EB62,U+EB63,U+EB64,U+EB65,U+EB66,U+EB67,\
 U+EB70,U+EB71,U+EB72,U+EB73,U+EB74,U+EB75,U+EB76,U+EB77,U+EB78,U+EB79,\
 U+EB7A,U+EB7B,U+EB7C,U+EB7D,U+EB7E,U+EB7F,\
-U+ED40,U+ED41"
+U+ED40,U+ED41,\
+U+E440,U+E441,U+E442,U+E443,U+E444,U+E445,U+E446,U+E447,\
+U+ED60,U+ED61,U+ED62,U+E107,U+ECA3,U+ECA5"
+# The last line holds symbols that come from the score itself rather than the
+# renderer: small and chord-symbol accidentals, and others MuseScore writes into
+# direction text (e.g. the flat in a chord name like "E\uE441").
 
 mkdir -p "$OUT_DIR"
 OUT="$OUT_DIR/Bravura-subset.woff2"

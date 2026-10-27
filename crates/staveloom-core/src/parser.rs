@@ -391,6 +391,10 @@ pub fn parse_musicxml(xml: &str) -> Result<Score, ParserError> {
             id: part_node.attribute("id").unwrap_or_default().to_string(),
             ..Default::default()
         };
+        // (staff, number) of hairpins dropped as copies of another; their
+        // stops are dropped too.
+        let mut copied_wedges: std::collections::HashSet<(Option<i32>, i32)> =
+            std::collections::HashSet::new();
 
         for measure_node in part_node.children().filter(|n| n.has_tag_name("measure")) {
             let mut measure = Measure {
@@ -430,9 +434,68 @@ pub fn parse_musicxml(xml: &str) -> Result<Score, ParserError> {
                             .unwrap_or(0);
                         measure.elements.push(MeasureElement::Forward(duration));
                     }
-                    "direction" => measure
-                        .elements
-                        .push(MeasureElement::Direction(parse_direction(child))),
+                    "direction" => {
+                        // <offset> places the direction away from the current
+                        // position (MuseScore writes tempo changes between notes
+                        // this way). Step the cursor there and back so every
+                        // pass sees the direction at its real time.
+                        let offset = child
+                            .children()
+                            .find(|n| n.has_tag_name("offset"))
+                            .and_then(|n| n.text()?.trim().parse::<f64>().ok())
+                            .map(|v| v.round() as i32)
+                            .unwrap_or(0);
+                        let parsed = parse_direction(child);
+                        // Exporters sometimes repeat one direction many times
+                        // at the same spot (ten identical `ff`s); drawing each
+                        // stacks them away from one another and blows up the
+                        // staff spacing.
+                        if offset == 0
+                            && matches!(measure.elements.last(),
+                                Some(MeasureElement::Direction(prev)) if *prev == parsed)
+                        {
+                            continue;
+                        }
+                        // The same hairpin stacked under several numbers (1, 2, 3, 4
+                        // at one spot): keep the first. Drawing each would push the
+                        // copies apart and open up the space below the staff.
+                        if let [DirectionType::Wedge(w)] = parsed.types.as_slice() {
+                            let key = (parsed.staff, w.number.unwrap_or(1));
+                            if w.wedge_type == "stop" || w.wedge_type == "continue" {
+                                if w.wedge_type == "stop" && copied_wedges.remove(&key) {
+                                    continue;
+                                }
+                                if copied_wedges.contains(&key) {
+                                    continue;
+                                }
+                            } else if offset == 0
+                                && matches!(measure.elements.last(),
+                                    Some(MeasureElement::Direction(prev))
+                                        if prev.placement == parsed.placement
+                                            && prev.staff == parsed.staff
+                                            && matches!(prev.types.as_slice(),
+                                                [DirectionType::Wedge(p)]
+                                                    if p.wedge_type == w.wedge_type
+                                                        && p.spread == w.spread
+                                                        && p.number != w.number))
+                            {
+                                copied_wedges.insert(key);
+                                continue;
+                            }
+                        }
+                        let dir = MeasureElement::Direction(parsed);
+                        if offset < 0 {
+                            measure.elements.push(MeasureElement::Backup(-offset));
+                            measure.elements.push(dir);
+                            measure.elements.push(MeasureElement::Forward(-offset));
+                        } else if offset > 0 {
+                            measure.elements.push(MeasureElement::Forward(offset));
+                            measure.elements.push(dir);
+                            measure.elements.push(MeasureElement::Backup(offset));
+                        } else {
+                            measure.elements.push(dir);
+                        }
+                    }
                     "sound" => {
                         let tempo = child.attribute("tempo").and_then(|v| v.parse().ok());
                         let dalsegno = child.attribute("dalsegno").map(|s| s.to_string());
@@ -881,7 +944,18 @@ fn parse_direction(node: Node) -> Direction {
                 match tag_name {
                     "words" => {
                         if let Some(text) = dt_child.text() {
-                            dir.types.push(DirectionType::Words(text.to_string()));
+                            // Consecutive <words> are one line of text set in
+                            // runs (e.g. "Cm" + "7", or "E" + a flat in a music
+                            // font): join them so they print side by side.
+                            let follows_words = dt_child
+                                .prev_sibling_element()
+                                .is_some_and(|p| p.has_tag_name("words"));
+                            match dir.types.last_mut() {
+                                Some(DirectionType::Words(prev)) if follows_words => {
+                                    prev.push_str(text)
+                                }
+                                _ => dir.types.push(DirectionType::Words(text.to_string())),
+                            }
                         }
                     }
                     "dynamics" => {
