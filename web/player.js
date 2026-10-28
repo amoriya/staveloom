@@ -213,6 +213,17 @@
 
   // ── Drag & Drop ──────────────────────────────────────────────────────────
   function setupDragAndDrop() {
+    // Mobile pickers map `accept` extensions to system file types. iOS knows
+    // no type for .musicxml/.mxl (and greys out .mid/.midi too), so only .xml
+    // stays selectable; Android has no MIME type for .musicxml/.mxl either.
+    // Let them pick any file: processFile tells MIDI from MusicXML by content
+    // and reports files it can't parse.
+    const ua = navigator.userAgent;
+    const isMobilePicker =
+      /iPhone|iPad|iPod|Android/.test(ua) ||
+      (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+    if (isMobilePicker) fileInput.removeAttribute("accept");
+
     dropzone.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", (e) => {
       if (e.target.files.length > 0) handleFile(e.target.files[0]);
