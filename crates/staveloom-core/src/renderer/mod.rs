@@ -1068,6 +1068,11 @@ impl Renderer {
                             let mut chord_time_pos = 0;
                             let mut divisions = *current_divisions_per_part.get(id).unwrap_or(&1);
 
+                            let cross_beamed = Self::cross_staff_beam_notes(measure);
+                            // staff -> (highest head top, lowest head bottom, beam levels)
+                            // of its notes in beams joining two staves: the beam
+                            // runs between the upper staff's and the lower's.
+                            let mut cross_heads: HashMap<i32, (f32, f32, u32)> = HashMap::new();
                             // Extract detailed relative vertical bounds (min_y, max_y) relative to the top line of each staff
                             for el in &measure.elements {
                                 match el {
@@ -1095,7 +1100,7 @@ impl Renderer {
 
                                         // TAB fret numbers sit on the string lines, not at the pitch's
                                         // staff position, and carry no stems; a hidden note draws nothing.
-                                        if let Some(pitch) = n.pitch.as_ref().filter(|_| clef.sign != "TAB" && n.print_object != Some(false)) {
+                                        if let Some(pitch) = Self::display_pitch(n).as_ref().filter(|_| clef.sign != "TAB" && n.print_object != Some(false)) {
                                             let y = self.pitch_to_y(pitch, &clef, 0.0);
                                             note_min_head = y - 5.0;
                                             note_max_head = y + 5.0;
@@ -1120,7 +1125,22 @@ impl Renderer {
                                             } else {
                                                 0.0
                                             };
-                                            let stem_clearance = 40.0 + beam_extra;
+                                            // A stem joining the other staff's notes in one
+                                            // beam spans the gap at whatever size it gets.
+                                            let stem_clearance = if cross_beamed
+                                                .contains(&(n as *const Note as usize))
+                                            {
+                                                let levels = n.beams.iter().map(|b| b.number).max().unwrap_or(1).max(1) as u32;
+                                                let e = cross_heads
+                                                    .entry(s_num)
+                                                    .or_insert((f32::MAX, f32::MIN, 1));
+                                                e.0 = e.0.min(y - 5.0);
+                                                e.1 = e.1.max(y + 5.0);
+                                                e.2 = e.2.max(levels);
+                                                0.0
+                                            } else {
+                                                40.0 + beam_extra
+                                            };
                                             note_stem_up = Some(is_stem_up);
 
                                             if is_stem_up {
@@ -1394,6 +1414,17 @@ impl Renderer {
                             let margin = 12.0;
 
                             for s in 1..current_num_staves {
+                                // A cross-staff beam needs its band between the upper
+                                // staff's lowest and the lower staff's highest heads:
+                                // a short stem (12px) each side and the beams.
+                                if let (Some(&(_, upper_bottom, l1)), Some(&(lower_top, _, l2))) =
+                                    (cross_heads.get(&s), cross_heads.get(&(s + 1)))
+                                {
+                                    let beams = l1.max(l2) as f32;
+                                    let band = 2.0 * 12.0 + 5.0 + (beams - 1.0) * 7.5;
+                                    max_needed_staff_dist =
+                                        max_needed_staff_dist.max(upper_bottom - lower_top + band);
+                                }
                                 // Collect per-onset x positions to detect proximity
                                 // Protrusion check: only expand if elements would physically
                                 // overlap the opposite staff's LINE region [0..40].
@@ -1517,6 +1548,7 @@ impl Renderer {
                             }
 
                             let mut chord_time_pos = 0;
+                            let cross_beamed = Self::cross_staff_beam_notes(m);
                             for el in &m.elements {
                                 match el {
                                     MeasureElement::Attributes(attr) => {
@@ -1548,7 +1580,7 @@ impl Renderer {
 
                                         // TAB fret numbers sit on the string lines, not at the pitch's
                                         // staff position, and carry no stems; a hidden note draws nothing.
-                                        if let Some(pitch) = n.pitch.as_ref().filter(|_| clef.sign != "TAB" && n.print_object != Some(false)) {
+                                        if let Some(pitch) = Self::display_pitch(n).as_ref().filter(|_| clef.sign != "TAB" && n.print_object != Some(false)) {
                                             let y = self.pitch_to_y(pitch, &clef, 0.0);
                                             note_min = y - 5.0 + s_offset;
                                             note_max = y + 5.0 + s_offset;
@@ -1575,7 +1607,14 @@ impl Renderer {
                                             } else {
                                                 0.0
                                             };
-                                            let stem_clearance = 40.0 + beam_extra;
+                                            // (Not a stem of a beam spanning both staves.)
+                                            let stem_clearance = if cross_beamed
+                                                .contains(&(n as *const Note as usize))
+                                            {
+                                                0.0
+                                            } else {
+                                                40.0 + beam_extra
+                                            };
 
                                             if is_stem_up {
                                                 note_min =
@@ -1795,6 +1834,8 @@ impl Renderer {
             // Pass 2: Calculate Y-offsets for each part ensuring no vertical overlaps at overlapping X positions
             let mut prev_id: Option<String> = None;
             let mut prev_max_rel: Option<f32> = None;
+            // Bottom line of the previous part's lowest staff, relative to its top.
+            let mut prev_staff_bottom: Option<f32> = None;
             for (id, onset_bounds, part_bottom_max, min_rel, max_rel) in part_onset_bounds_list {
                 let resolved_y;
 
@@ -1808,6 +1849,12 @@ impl Renderer {
                     if let Some(prev_max) = prev_max_rel {
                         let full_height_push = prev_max + margin - min_rel;
                         required_push = required_push.max(full_height_push);
+                    }
+                    // Below a part of several staves, the same gap between staves
+                    // as below a one-staff part (`part_distance` counts one staff).
+                    if let Some(bottom) = prev_staff_bottom {
+                        required_push = required_push
+                            .max(bottom + self.part_distance - 4.0 * self.staff_line_distance);
                     }
 
                     for &m_idx in &system.measure_indices {
@@ -1859,6 +1906,7 @@ impl Renderer {
                 total_system_height = resolved_y + visual_bottom;
                 prev_id = Some(id.clone());
                 prev_max_rel = Some(max_rel);
+                prev_staff_bottom = Some(part_bottom_max);
             }
 
             // Pre-calculate system-wide top protrusion to shift the whole system down
@@ -1964,7 +2012,7 @@ impl Renderer {
                                             });
                                         // TAB fret numbers sit on the string lines, not at the pitch's
                                         // staff position, and carry no stems; a hidden note draws nothing.
-                                        if let Some(pitch) = n.pitch.as_ref().filter(|_| clef.sign != "TAB" && n.print_object != Some(false)) {
+                                        if let Some(pitch) = Self::display_pitch(n).as_ref().filter(|_| clef.sign != "TAB" && n.print_object != Some(false)) {
                                             let y = self.pitch_to_y(pitch, &clef, 0.0);
                                             let clearance = notation_top_clearance(&n.notations);
                                             max_top_protrusion = max_top_protrusion.max(
@@ -8096,6 +8144,89 @@ impl Renderer {
 
     /// Addresses of `part`'s notes starting a wavy line with no matching stop
     /// (see `Renderer::open_wavy_notes`).
+    /// Where a note is drawn on the staff: its pitch, or for an unpitched
+    /// (percussion) note its display step and octave. None for a rest (whose
+    /// display step, kept in the same field, places the rest glyph).
+    fn display_pitch(n: &Note) -> Option<crate::models::Pitch> {
+        if n.rest {
+            return None;
+        }
+        n.pitch.clone().or_else(|| {
+            n.unpitched.as_ref().map(|u| crate::models::Pitch {
+                step: u.display_step.clone(),
+                octave: u.display_octave,
+                alter: None,
+            })
+        })
+    }
+
+    /// Addresses of a measure's notes (chord members included) in beam groups
+    /// spanning two staves. Their stems run into the staff gap and take their
+    /// length from it, so the gap mustn't be sized to hold them.
+    fn cross_staff_beam_notes(measure: &crate::models::Measure) -> std::collections::HashSet<usize> {
+        use crate::models::BeamValue;
+        struct Group {
+            staves: std::collections::HashSet<i32>,
+            notes: Vec<usize>,
+            ended: bool,
+        }
+        let mut result = std::collections::HashSet::new();
+        let mut finish = |g: Group| {
+            if g.staves.len() > 1 {
+                result.extend(g.notes);
+            }
+        };
+        // voice -> its current level-1 beam group (kept past its end note
+        // until the next main note, so the end note's chord joins it)
+        let mut groups: HashMap<i32, Group> = HashMap::new();
+        for el in &measure.elements {
+            let MeasureElement::Note(n) = el else { continue };
+            let voice = n.voice.unwrap_or(1);
+            let addr = n as *const Note as usize;
+            let staff = n.staff.unwrap_or(1);
+            if n.is_chord {
+                if let Some(g) = groups.get_mut(&voice) {
+                    g.staves.insert(staff);
+                    g.notes.push(addr);
+                }
+                continue;
+            }
+            if groups.get(&voice).is_some_and(|g| g.ended) {
+                finish(groups.remove(&voice).unwrap());
+            }
+            match n.beams.iter().find(|b| b.number == 1).map(|b| &b.value) {
+                Some(BeamValue::Begin) => {
+                    if let Some(g) = groups.remove(&voice) {
+                        finish(g);
+                    }
+                    groups.insert(
+                        voice,
+                        Group { staves: [staff].into(), notes: vec![addr], ended: false },
+                    );
+                }
+                Some(v @ (BeamValue::Continue | BeamValue::End)) => {
+                    let g = groups.entry(voice).or_insert_with(|| Group {
+                        staves: Default::default(),
+                        notes: Vec::new(),
+                        ended: false,
+                    });
+                    g.staves.insert(staff);
+                    g.notes.push(addr);
+                    g.ended = matches!(v, BeamValue::End);
+                }
+                _ => {
+                    if let Some(g) = groups.remove(&voice) {
+                        finish(g);
+                    }
+                }
+            }
+        }
+        for (_, g) in groups {
+            finish(g);
+        }
+        result
+    }
+
     fn open_wavy_notes(part: &crate::models::Part) -> Vec<usize> {
         let mut open = Vec::new();
         let mut pending: HashMap<i32, usize> = HashMap::new();
@@ -12599,8 +12730,18 @@ impl Renderer {
                 bottom,
             ));
             // A bracket in the gap between staves: the other staff's hairpins
-            // and texts there clear it (by widening the gap if need be).
-            self.push_gap_item(s.staff, !s.is_above, x1, x2, top, bottom);
+            // and texts there clear it (by widening the gap if need be). Not
+            // one over a beam joining both staves: it sits on that beam, which
+            // moves with the gap, so widening the gap could never clear it.
+            let on_cross_beam = self.placed_notes.borrow().iter().any(|pn| {
+                pn.cross_beam
+                    && pn.part_y == self.current_part_y.get()
+                    && pn.x >= x1 - 8.0
+                    && pn.x <= x2 + 8.0
+            });
+            if !on_cross_beam {
+                self.push_gap_item(s.staff, !s.is_above, x1, x2, top, bottom);
+            }
         }
         doc
     }
@@ -13055,6 +13196,19 @@ impl Renderer {
         // Long slurs stay fairly flat by default; obstacles raise them as needed.
         let height = (distance * 0.15).max(10.0).min(25.0);
         let direction = if is_above { -1.0 } else { 1.0 };
+        // What sits at an end's own x and beyond both ends (another voice's
+        // note and stem on the end note's beat) is past where the curve ends:
+        // clearing it would take an absurdly deep arc, so leave it out.
+        let ends_outer = if is_above { y1.min(y2) } else { y1.max(y2) };
+        let beside_end: Vec<(f32, f32)> = obstacles
+            .iter()
+            .copied()
+            .filter(|o| {
+                let at_end = (o.0 - x1).abs() < 8.0 || (o.0 - x2).abs() < 8.0;
+                !(at_end && direction * (o.1 - ends_outer) > 0.0)
+            })
+            .collect();
+        let obstacles = &beside_end[..];
 
         let outward = |a: f32, b: f32| if is_above { a.min(b) } else { a.max(b) };
         // The control points sit `h` beyond a base height: the outer endpoint's
@@ -13119,10 +13273,15 @@ impl Renderer {
             const NEAR_END_GAP: f32 = 6.0;
             const FAR_BEYOND: f32 = 20.0;
             let near = (dx * 0.08).max(30.0);
+            // Only an obstacle the curve passes on its way down (up) to the
+            // lower (higher) end: one beyond both ends (another voice's note
+            // and stem out past the slur) is nowhere near its path.
+            let outer_end = outward(y1, y2);
             let past = |y: f32, lo: f32, hi: f32| {
                 let need = obstacles
                     .iter()
                     .filter(|o| o.0 > lo && o.0 < hi)
+                    .filter(|o| direction * (o.1 - outer_end) <= 0.0)
                     .map(|o| o.1 + direction * NEAR_END_GAP)
                     .fold(y, outward);
                 if (need - y).abs() > FAR_BEYOND { need } else { y }
