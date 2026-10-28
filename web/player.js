@@ -169,6 +169,21 @@
     widthVal.innerText = `${fitted}px`;
   }
 
+  // Horizontal mode has no page width to fit, so the SVG would show at its
+  // natural size. Scale it down by the same factor the vertical layout shows
+  // at (MOBILE_RENDER_SCALE with the mobile layout, DESKTOP_RENDER_SCALE
+  // otherwise) so switching layouts keeps the notation the same size.
+  function fitHorizontalScore() {
+    const svgEl = scoreCanvas.querySelector("svg");
+    if (!svgEl) return;
+    const width = parseFloat(svgEl.getAttribute("width"));
+    if (!width) return;
+    const scale = mobileToggle.checked
+      ? MOBILE_RENDER_SCALE
+      : DESKTOP_RENDER_SCALE;
+    svgEl.style.width = `${width / scale}px`;
+  }
+
   // Keep the elastic toggle and width slider in sync with the mobile toggle's
   // current state. Snaps the width to MOBILE_RENDER_SCALE × the screen width
   // on the off→on transition and restores it back on the on→off transition,
@@ -494,6 +509,7 @@
       // Layout
       if (horizontalToggle.checked) {
         scoreViewport.classList.add("horizontal-mode");
+        fitHorizontalScore();
       } else {
         scoreViewport.classList.remove("horizontal-mode");
       }
